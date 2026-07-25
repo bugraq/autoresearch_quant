@@ -1,0 +1,88 @@
+# Veri kaynağı — TAK-ÇALIŞTIR (sentetik <-> gerçek). Kod değişmez.
+# (research/holdout bölme oranı campaign.yaml -> holdout_policy.research_fraction'da.)
+data:
+  source: binance            # synthetic | yfinance | sp500_pit | sp600_pit | binance
+  # ★ FAZ 5 — KRİPTO FUNDING DENEYİ (aktif; diğer kaynaklar ASKIDA).
+  #   Dört domain denendi (S&P large-cap / kripto / fundamentals / small-cap),
+  #   dördü de null. HEPSİNİN ORTAK YANI: aynı ham malzeme = fiyat + hacim.
+  #   Small-cap maliyet ablasyonu kanıtladı: maliyet SIFIRKEN bile sinyal yok
+  #   → sorun piyasa değil, bakılan BİLGİ. Funding rate = hisselerde OLMAYAN
+  #   pozisyonlanma verisi (long'lar kalabalık+kaldıraçlıysa likidasyon riski).
+  #   Small-cap'e dönmek için: source: sp600_pit.
+
+  # BINANCE perpetual: OHLCV + FUNDING RATE (ücretsiz, anahtarsız).
+  # SURVIVORSHIP: yfinance'in AKSİNE düzeltilebiliyor — Binance ölü coinlerin
+  # geçmişini SİLMİYOR (doğrulandı: LUNAUSDT 17.50 -> 0.008 çöküşü veride VAR;
+  # çöküş günü funding -%2.4 = panik sinyali, fiyat/hacimde görünmez).
+  # Evren = yaşayan USDT perpetual + bilinen ölüler (data/binance.py DEAD_SYMBOLS);
+  # coin yalnızca verisi olduğu günlerde işlem görür (index_membership).
+  # ÖNEMLİ: small-cap dersi — survivorship araştırma+holdout'u AYNI yönde bozar,
+  # holdout onu YAKALAYAMAZ; kaynakta düzeltmek şart.
+  binance:
+    # ★ 8 SAATLİK BAR — funding periyoduyla SENKRON. Günlük barda o günün 3
+    #   funding ödemesi TOPLANIYOR = bilginin çoğu eziliyordu. 8h barda her bara
+    #   TAM BİR ödeme düşer (bar [00:00,08:00) -> funding 08:00'de = bar kapanışı,
+    #   info_tick=close_t korunur). Ayrıca veri 3x (1.827 -> ~5.500 bar) =
+    #   istatistiksel güç artar. Yıllıklaştırma otomatik: 365*3=1095 bar/yıl.
+    #   Günlüğe dönmek için: interval: 1d
+    interval: 8h             # 1d | 8h
+    include_dead: true       # ölü coinleri (LUNA/FTT vb.) evrene kat
+    # max_symbols: 120       # hızlı deneme için sınır (yorumda = tüm evren ~665)
+    # symbols: [...]         # elle sembol listesi (yorumda = otomatik evren)
+    # Tarih aralığı campaign.yaml -> start_date/end_date'ten gelir (tek kaynak).
+
+  # POINT-IN-TIME S&P 500 (survivorship DÜZELTMESİ, Doküman 4/7):
+  # Wikipedia değişiklik tarihçesinden her tarihteki gerçek üye kümesi kurulur;
+  # pencerede bir gün bile üye olmuş HER ticker (bugün endekste olmayanlar
+  # dahil, ~700 isim) indirilir ve hisse yalnızca üye olduğu günlerde işlem
+  # görür. İlk yükleme uzun sürer (~700 ticker), sonrası cache'ten (data/*.pkl).
+  # Tarih aralığı campaign.yaml'dan enjekte edilir (tek kaynak).
+  sp500_pit:
+    cache_dir: data
+    delisting_shock: 0.30    # delist olan hisse pozisyondan bu kayıpla çıkar
+                             # (CRSP delisting return'ün tutucu placeholder'ı;
+                             # 0.0 = eski iyimser 'kayıpsız çıkış'). Doküman 7.
+
+  # S&P 600 SMALL-CAP — sp500_pit ile AYNI PIT mekanizması (Wikipedia değişiklik
+  # tarihçesi → her tarihte gerçek üye kümesi). Small-cap'te survivorship
+  # düzeltmesi ZORUNLU: iflas/satın alma oranı yüksek, bugünkü listeyi geçmişe
+  # uygulamak alpha'yı ciddi şişirir VE bu yanlılık araştırma+holdout'u aynı yönde
+  # bozduğu için HOLDOUT YAKALAYAMAZ. Doğrulandı: 941 ticker (456'sı bugün üye
+  # değil ama geçmişte üyeydi = düzeltme çalışıyor), günlük ~614 üye.
+  # ⚠ TARİH SINIRI: Wikipedia S&P600 değişiklik tarihçesi 2019-12-17'de başlıyor
+  #   → campaign.yaml 2020-01-01'den koşar. Daha geriye gitmek düzeltilmemiş
+  #   survivorship demek olurdu (dürüstlük gereği yapılmadı).
+  # delisting_shock small-cap'te daha yüksek: iflaslar large-cap'ten sert.
+  sp600_pit:
+    cache_dir: data
+    delisting_shock: 0.40
+
+  synthetic:
+    kind: momentum           # momentum | reversal | random
+    n_sec: 20                # varlık sayısı
+    n_days: 750              # günlük bar sayısı
+    seed: 7                  # tekrar-üretilebilirlik
+
+  # yfinance = KRİPTO deneyi (şu an aktif). SURVIVORSHIP UYARISI: yfinance güncel
+  # coin listesi verir → ölü coinler (LUNA, FTT) yok = survivorship bias (Doküman 7).
+  # Prototip/araştırma yönü için kabul edilebilir; dürüstçe belgelendi.
+  # ~28 likit coin (yenice çıkanlar -SOL/AVAX- veri başlangıcına dek NaN, motor
+  # otomatik işleme sokmaz). Kesitsel long-short için yeterli dispersiyon.
+  # ★ FUNDAMENTALS DENEYİ: value/quality dispersiyonu olan ~50 ABD hissesi
+  #   (banka/enerji/staples = value; tech = growth; pharma/tüketici = kalite).
+  #   fundamentals: true → EDGAR'dan PIT book_to_market + roe eklenir.
+  yfinance:
+    fundamentals: true
+    tickers: [AAPL, MSFT, GOOGL, AMZN, META, NVDA, JPM, BAC, WFC, C, GS, MS,
+              XOM, CVX, COP, JNJ, PFE, MRK, ABBV, LLY, KO, PEP, PG, WMT, COST,
+              HD, MCD, NKE, DIS, V, MA, UNH, T, VZ, CSCO, INTC, AMD, QCOM, TXN,
+              ORCL, IBM, ADBE, CRM, NFLX, AVGO, CAT, BA, HON, MMM, F]
+    # Tarih aralığı campaign.yaml -> start_date/end_date'ten gelir (tek kaynak).
+    # Kripto listesi git geçmişinde (kripto denemek istersen oradan al).
+    # ESKİ ABD hisse listesi git geçmişinde (S&P'ye dönmek istersen sp500_pit kullan).
+
+  # İleride: kripto (ccxt) — 7/24, funding rate, ölü coin survivorship'i
+  # crypto:
+  #   exchange: binance
+  #   symbols: [BTC/USDT, ETH/USDT, ...]
+  #   timeframe: 1d

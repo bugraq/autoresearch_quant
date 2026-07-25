@@ -1,0 +1,131 @@
+# Kampanya konfigürasyonu (Doküman 4.1)
+# Campaign Manager bu sınırları UYGULAR: izin verilen alanlar/operatörler/ufuklar,
+# deney + token bütçesi, risk kısıtları, holdout erişimi. Buradaki her alan kodda
+# gerçekten kullanılır (dekoratif değil).
+campaign:
+  name: crypto_funding_v1
+  universe: binance_usdt_perpetual
+  # ★ FAZ 5 — FUNDING DENEYİ: kaldıraç #1'in GERÇEK uygulaması = YENİ BİLGİ.
+  #   Dört domain null verdi (S&P large-cap / kripto / fundamentals / small-cap)
+  #   ve hepsi AYNI ham malzemeye bakıyordu: fiyat + hacim. Small-cap maliyet
+  #   ablasyonu kesin gösterdi: maliyet SIFIRKEN bile sinyal yok → sorun piyasa
+  #   değil, BİLGİ. Small-cap aslında ham malzemeyi değiştirmemişti (aynı
+  #   malzeme, başka piyasa). Funding rate hisselerde YOK.
+  #   DENEYİN ASIL SORUSU: funding (pozisyonlanma/kaldıraç bilgisi) fiyat-hacmin
+  #   üstüne GERÇEK bir sinyal katıyor mu — ve holdout'tan sağ çıkıyor mu?
+  universe_description: "~665 Binance USDT perpetual kripto (yaşayanlar + delist olmuş ölüler: LUNA/FTT dahil), günlük OHLCV + funding rate, 2020-2024. Survivorship düzeltilmiş: coin yalnızca verisi olduğu günlerde işlem görür (LUNA 17.50->0.008 çöküşü veride var). Kesitsel long-short, 7/24 piyasa."
+  goal: "Kesitsel günlük long-short alpha ara (kripto perpetual; funding rate = pozisyonlanma bilgisi + fiyat/hacim)"
+  # Funding verisi 2019-09'dan var; 2020-2024 = eski kripto deneyiyle karşılaştırılabilir.
+  start_date: 2020-01-01
+  end_date: 2024-12-31
+
+  # MEMORIZATION ÖNLEMİ: LLM, eğitim verisinden bu dönemde bu hisselere ne
+  # olduğunu ezbere bilir (parametre-içi look-ahead). true iken LLM'e ticker
+  # adları ve tarih aralığı GİTMEZ; yalnızca anonim evren tarifi gider.
+  # false yapmak = memorization ablation deneyi (karşılaştırma için).
+  anonymize_universe: true
+
+  # Literatür corpus'u (agents/literature.py): equity | crypto.
+  # Kripto evrenine HİSSE anomalisi (52-hafta zirvesi, ay-sonu mevsimselliği,
+  # Amihud) fısıldamak aramayı kör bırakır — perpetual piyasanın kendi
+  # mekanizmaları var (funding kalabalıklığı, tasfiye kaskadı, 7/24 takvim).
+  # NOT: corpus'a yalnız literatürdeki MEKANİZMA girer; bizim sondajımızda
+  # bulunan spesifik pencereler BİLEREK verilmez (aramanın işi onları bulmak).
+  literature_domain: crypto
+
+  # Anonimken LLM'e GİDEN tarif (ticker adı ve tarih aralığı YOK → memorization
+  # önlemi korunur). Varsayılan metin "likit BÜYÜK ölçekli hisse" der; bu evren
+  # small-cap olduğundan onu kullanmak LLM'i yanlış piyasa sezgisine iterdi.
+  # Likidite/maliyet niteliğini söylemek sızıntı değil, deneyin ta kendisi.
+  anonymous_description: "Kripto para daimi vadeli işlem (perpetual futures) sözleşmelerinden oluşan geniş kesitsel bir evren (~600 enstrüman); 7/24 işlem gören günlük barlar. Nitelikleri: çok yüksek oynaklık, geniş kesitsel dispersiyon, ağırlıklı olarak bireysel/kaldıraçlı katılımcılar, hisse senedi piyasalarına göre daha az kurumsal arbitraj; enstrümanlar tamamen çökebilir veya listeden kalkabilir. İşlem maliyeti orta (10 bps). AYRICA hisse senedinde BULUNMAYAN bir veri alanı vardır: funding_rate — daimi sözleşmenin spot fiyata yakınsamasını sağlayan periyodik ödeme. Pozitif funding: uzun (long) taraf kalabalık ve kaldıraçlı, uzunlar kısalara öder; negatif funding: kısa (short) taraf kalabalık, kısalar uzunlara öder. Bu bir POZİSYONLANMA/kaldıraç göstergesidir ve fiyat ile hacimde GÖRÜNMEZ; kalabalık ve kaldıraçlı tarafın tasfiye (likidasyon) riski taşıdığı iktisadi mekanizmasına dayanır. Hangi piyasa, hangi enstrümanlar ve hangi tarih aralığı olduğu BİLİNÇLİ olarak verilmiyor — genel geçer, mekanizma temelli hipotezler üret (belirli varlık/dönem bilgisine dayanma). Fiyat ve hacim temelli klasik fikirler bu evrende defalarca denendi ve hepsi başarısız oldu; funding_rate'i tek başına veya fiyat/hacimle ETKİLEŞİM halinde kullanan fikirlere öncelik ver."
+
+  # --- İzin verilen strateji uzayı (Campaign Manager kısıtları) ---
+  allowed_fields:                  # LLM yalnızca bu veri alanlarını kullanabilir
+    # NOT: market_cap YOK — yfinance'ta shares outstanding olmadığından gerçek
+    # market_cap üretilemiyor; sahte (fiyat) veriyle "size faktörü" test etmek
+    # etiket-sinyal dürüstlüğünü bozar. Gerçek veri gelince eklenebilir.
+    - open
+    - high
+    - low
+    - close
+    - adjusted_close
+    - volume
+    - dollar_volume
+    # ★ YENİ BİLGİ — bu deneyin TÜM SEBEBİ. Hisse senedinde muadili yok.
+    # Funding 8 saatte bir (00/08/16 UTC) ödenir; günlük alan o günün ödemeler
+    # TOPLAMI → ancak gün kapanışında bilinir (operators.py FIELD_BASE_TICK=1,
+    # yani close_t). Ödeme olmayan gün NaN (ffill YOK — funding bir olaydır).
+    - funding_rate
+    # NOT: book_to_market/roe (EDGAR fundamentals) KAPALI — kripto şirketi değil,
+    # bilanço yok. Fundamentals ayrı domain olarak denendi (holdout eledi).
+
+  allowed_operators:
+    # temel
+    - return
+    - rolling_mean
+    - rolling_std
+    - cross_sectional_rank
+    - negate
+    - abs               # |x|: reversal büyüklüğü / işaretsiz sapma (LLM sık istiyordu)
+    - zscore
+    - delta
+    - ewma
+    - volatility
+    # NOT: neutralize_sector ÇIKARILDI — kripto evreninde GICS sektör haritası yok
+    # (adapter sectors=None); operatör sessizce piyasa-demean'e düşer ve LLM
+    # "sektör-nötr" diye YANLIŞ etiketler. demean/normalize zaten listede.
+    - winsorize
+    - normalize
+    - demean
+    # gün-içi (high/low) — kullanılmayan intraday bilgiyi açar
+    - intraday_range      # (high-low)/close: oynaklık/likidite vekili
+    - close_location      # (close-low)/(high-low): gün-içi alım/satış baskısı
+    # koşullama / rejim
+    - conditional
+    - greater_than
+    - less_than
+    - multiply
+    - subtract
+
+  allowed_horizons: [5, 10, 20, 60, 90, 120]     # kullanılabilir pencere/ufuklar
+  allowed_rebalance: [daily, weekly, monthly]
+  portfolio_types: [cross_sectional_long_short, long_only]
+
+  # SABİT MODEL — kampanya başına TEK model (normal ML pratiği). LLM sadece
+  # hipotezi/özellikleri arar, model bu kampanyada değişmez. Değiştirmek = tek satır.
+  #   dsl_formula        : klasik — sinyal elle yazılmış DSL formülü (model kutusu kapalı)
+  #   random_forest      : ağaç ML — özellik etkileşimlerini kendi yakalar (VARSAYILAN)
+  #   gradient_boosting  : ağaç ML (boosting)
+  #   linear_regression / ridge : istatistiksel (doğrusal)
+  #   naive_bayes        : olasılıksal (yön)
+  model: random_forest
+
+  # --- Bütçe (Campaign Manager) ---
+  budget:
+    maximum_experiments: 24        # ~570 hisselik evrende anlamlı arama için
+    maximum_llm_tokens: 300000     # bu bütçe aşılınca kampanya durur
+    # ★ SMALL-CAP GERÇEKÇİ MALİYET: 5 bps large-cap içindi; small-cap'te spread
+    #   çok daha geniş (~20-40 bps). 5'te bırakmak small-cap'te SAHTE alpha
+    #   üretirdi — literatürde bu anomalilerin cevabı büyük ölçüde "maliyet yiyor".
+    #   25 = tutucu orta nokta; deneyin asıl sorusu bu eşiği aşan sinyal var mı.
+    cost_bps: 10.0                 # kripto perpetual: taker ~4-5bps + altcoin makası
+                                   # (small-cap 25 bps'ti; large-cap 5 bps)
+    parameter_optimization: true   # kabul sonrası pencereleri optimizer arar (LLM değil)
+
+  # --- Risk kısıtları (hard gate; sabit, LLM gameleyemez) ---
+  risk_constraints:
+    min_acceptance_sharpe: 0.5     # kabul için minimum OOS Sharpe
+    max_drawdown: 0.40             # üstü doğrudan red
+    max_turnover: 300.0            # yıllık; üstü doğrudan red
+    min_positive_folds: 0.5        # walk-forward tutarlılık eşiği
+    # ÖZGÜNLÜK ZORLAMASI (AlphaAgent novelty-regularization). Sert duplicate
+    # eşiğinin (0.90) altında ama mevcut bir faktöre >%75 benzeyen hipotezler
+    # backtest'e sokulmadan yeniden ürettirilir → LLM'in momentum gibi kalabalık
+    # motiflere yaslanması kırılır, çeşitlilik artar. 0.0 = kapalı.
+    min_originality: 0.25
+
+  # --- Holdout politikası (Doküman 10.3) ---
+  holdout_policy:
+    access_mode: one_shot
+    maximum_candidates: 20
+    research_fraction: 0.7         # kalan %30 KİLİTLİ holdout

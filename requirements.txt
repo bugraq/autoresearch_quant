@@ -1,0 +1,22 @@
+# Çekirdek — contract'lar ve config
+pydantic>=2.0
+pyyaml>=6.0
+
+# Veri ve backtest
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3   # MODEL kutusu: lineer regresyon + naive bayes (hipotez→model→backtest)
+
+# Kullanıcı arayüzü — canlı ajan terminali + kontrol paneli
+rich>=13.0          # python agent.py (menü) + python main.py --live (canlı akış)
+# NOT: streamlit web arayüzü EMEKLİ (arsiv/streamlit_app.py). agent.py (terminal
+# kontrol) + dashboard (görsel rapor) işlevini karşılıyor; S&P dönemine bağlıydı.
+
+# LLM (OpenRouter/OpenAI-uyumlu)
+openai>=1.0
+python-dotenv>=1.0
+
+# Gerçek veri (opsiyonel — data.yaml source: yfinance | sp500_pit)
+yfinance>=0.2
+lxml>=5.0          # Wikipedia point-in-time üyelik tablosu parse (pandas.read_html)
+requests>=2.31     # Wikipedia fetch (uygun User-Agent ile)

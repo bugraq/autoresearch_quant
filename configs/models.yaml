@@ -1,0 +1,35 @@
+# Model card'lar (Doküman 17.1) — model TAK-ÇALIŞTIR burada.
+# Bir modeli değiştirmek = burada tek blok. Kod değişmez.
+models:
+  hypothesis_generator:
+    provider: openrouter        # dummy | random | openrouter | vllm | openai_compatible
+    # BASELINE KARŞILAŞTIRMASI (Deney A): provider: random + critic: dummy yap,
+    # AYNI bütçeyle koş; LLM'in random-search'e karşı verimliliği ölçülür.
+    # seed: 0                   # random provider için (reproducibility)
+    # BEDAVA + güçlü: 550B MoE, 1M context, JSON güvenilir (22.07.2026'da test
+    # edildi: 2.5 sn, temiz JSON). Bedava modeller RATE-LIMIT (429) yiyebilir;
+    # takılan çağrı sert-timeout ile atlanır, kampanya sürer.
+    #
+    # ⚠ BEDAVA SLUG'LAR ÖLÜR: eski varsayılan `tencent/hy3:free` OpenRouter
+    # tarafından ücretliye çevrildi (404: "unavailable for free"). Kampanya
+    # açılışta patlarsa önce buradaki slug'ın hâlâ var olduğunu kontrol et:
+    #   https://openrouter.ai/api/v1/models  -> id'si ':free' ile bitenler
+    # Alternatif bedava: google/gemma-4-31b-it:free, openai/gpt-oss-20b:free.
+    # Paralı güçlü: deepseek/deepseek-chat, tencent/hy3 (artık ücretli).
+    model: nvidia/nemotron-3-ultra-550b-a55b:free
+    api_key_env: OPENROUTER_API_KEY   # key .env'den okunur, koda girmez
+    endpoint: null              # vLLM'e geçince: http://localhost:8000/v1
+    temperature: 0.9            # üretimde yüksek çeşitlilik
+    max_tokens: 4000
+    web_search: false           # Literatür grounding VARSAYILANI = statik corpus
+                                # (agents/literature.py): reproducible + point-in-time
+                                # güvenli. true yapılırsa canlı web araması denenir ama
+                                # reproducibility + look-ahead sızıntısı riski taşır.
+
+  quant_critic:               # BAĞIMSIZ eleştirmen (Doküman 15)
+    provider: openrouter      # dummy | openrouter | vllm
+    model: google/gemma-4-26b-a4b-it:free  # BEDAVA + üreticiden FARKLI model =
+                              #   gerçek bağımsızlık (Doküman 15), bedava gelir.
+    api_key_env: OPENROUTER_API_KEY
+    endpoint: null
+    temperature: 0.2          # değerlendirmede düşük sıcaklık

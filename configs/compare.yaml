@@ -1,0 +1,109 @@
+# Model karşılaştırma deneyi (Doküman 15/26 — Deney A'nın modeller-arası hali).
+#
+# Her yarışmacı AYNI veri, AYNI kampanya kısıtları ve AYNI deney bütçesiyle
+# koşar; tek fark hipotez üreticisi. Çıktı: araştırma-verimliliği tablosu
+# (kabul, duplicate oranı, derleme hatası, en iyi DSR, token maliyeti).
+#
+#   python compare.py
+#
+# Notlar:
+#   - critic: dummy -> bütün yarışmacılara AYNI deterministik pipeline (adalet).
+#     LLM critic açılırsa üreticiler arası fark critic'in insafına karışır.
+#   - Literatür araması karşılaştırmada KAPALI (koşular arası varyans katmasın).
+#   - random-search = alt çıta: LLM bundan iyi değilse "LLM katkısı yok" demektir.
+compare:
+  # BÜTÇE (campaign.yaml'ı EZER). Karşılaştırma çok koşu yapar (yarışmacı × seed);
+  # LLM yarışmacıları token yakar. Ana kampanyayı sakatlamadan burayı küçük tut.
+  budget_override: 10
+
+  # ÇOKLU SEED: tek koşu YANILTIR (yüksek varyans). Aynı deney farklı veri
+  # seed'leriyle tekrarlanır; sonuç ortalama ± aralık olarak raporlanır.
+  seeds: [3, 5, 7]
+
+  # DEĞERLENDİRME ORTAMI (data.yaml'ı EZER). Neden sentetik benchmark?
+  # Araştırma VERİMLİLİĞİ ancak bulunacak bir şey varken ölçülebilir: etkin
+  # large-cap'te sinyal ~yok, herkesin eğrisi düz çıkar ve "kim daha iyi arıyor"
+  # sorusu cevapsız kalır. Kontrollü benchmark'ta ground-truth BİLİNDİĞİ için
+  # "kim gömülü sinyali daha hızlı/yükseğe buluyor" net ölçülür.
+  # (Gerçek-veri null sonucu ayrı bir bulgudur; bu deney onu değil ARAMA
+  #  verimliliğini ölçer — Doküman 26.)
+  data:
+    source: synthetic
+    synthetic:
+      # ETKİLEŞİM benchmark'ı: alpha momentum×hacim ÇARPIMINDA gizli.
+      # Neden 'momentum' değil? Ölçüldü: tek-faktörlü momentum benchmark'ında
+      # random-search 11 backtest'te Sharpe +7.9 buluyor — LLM'lerle AYNI tavan.
+      # Herkes buluyorsa deney AYIRT ETMİYOR. Etkileşimde ise (doğrulandı):
+      #   sadece momentum -> IC -0.002 (~0) | sadece hacim -> IC -0.002 (~0)
+      #   momentum×hacim  -> IC +0.164     <- yalnızca BİRLEŞTİREN bulur
+      # Böylece "kim daha iyi arıyor" gerçekten ölçülür (Doküman 26).
+      kind: interaction
+      n_sec: 40
+      n_days: 1400
+      seed: 3
+
+  # GERÇEK ALPHA'NIN YAPISI (yalnızca ground-truth'u BİLİNEN kontrollü benchmark'ta
+  # anlamlı). "Yapısal isabet oranı" = arayıcının hipotezlerinin kaçı doğru aileyi
+  # deniyor. NEDEN GEREKLİ: 'en iyi Sharpe' farklı sayıda denemenin MAKSİMUMUNU
+  # kıyaslar → 5 gürültülü çekilişin maksimumu 128'inkini şans eseri geçebilir;
+  # metrik arama zekâsını GİZLER. Ölçüldü: random 1/5 (%20) doğru yapıyı şansla
+  # tutturup +3.72 aldı; deepseek 75/128 (%59) sistematik doğru yapıyı aradı ama
+  # 'en iyi Sharpe'ta geride göründü. İsabet oranı gerçek verimlilik ölçüsüdür.
+  target_structure:
+    required_ops: [multiply]                  # birleştirme ŞART (etkileşim)
+    required_any_field: [volume, dollar_volume]  # hacim bacağı ŞART
+
+  # YARIŞMACILAR — 5 LLM, 5 FARKLI sağlayıcı (Tencent/Meta/OpenAI/DeepSeek/Google).
+  # Kullanıcı isteği: 2 ücretsiz + 2 ucuz (biri çok ucuz, biri güçlü-ucuz) + 1 orta
+  # (~$2 f/p en iyi). Böylece "hangi LLM daha iyi HİPOTEZ üretiyor" ölçülür (model
+  # seçimi). Fiyatlar OpenRouter /models API'den (2026-07) doğrulandı; tahmini toplam
+  # ~$2/koşu. Bedava modeller rate-limit (429) yiyebilir → bazı deneyler atlanır.
+  #
+  # ⚠ BASELINE UYARISI: random-search + genetic-programming ÇIKARILDI. Onlar
+  # "LLM gerçekten arıyor mu, rastgeleden iyi mi?" bilimsel kontrolüydü (Deney A).
+  # Sadece LLM'ler yarışınca bu iddia ölçülemez — yalnız "en iyi LLM hangisi"
+  # bilinir. Bilimsel kontrolü geri istersen: `- {label: random-search, provider:
+  # random, seed: 0}` ekle.
+  contestants:
+    # ⚠ BEDAVA SLUG'LAR ÖLÜYOR: 22.07.2026'da `tencent/hy3:free` ücretliye
+    # çevrildi, `meta-llama/llama-3.3-70b-instruct:free` kaldırıldı. İkisi de
+    # aşağıdaki hâlâ-bedava modellerle değiştirildi. Koşudan önce kontrol:
+    #   https://openrouter.ai/api/v1/models  -> id'si ':free' ile bitenler
+
+    # 1) ÜCRETSİZ #1 — 550B MoE, 1M context; test edildi (NVIDIA)
+    - label: nemotron-ultra-free-BEDAVA
+      provider: openrouter
+      model: nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.9
+
+    # 2) ÜCRETSİZ #2 — küçük/hızlı açık model (Google Gemma)
+    - label: gemma31b-free-BEDAVA
+      provider: openrouter
+      model: google/gemma-4-31b-it:free
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.9
+
+    # 3) ÇOK UCUZ — 120B açık model, cüzi fiyat (~$0.02/koşu; OpenAI oss)
+    - label: gptoss120b-COK-UCUZ
+      provider: openrouter
+      model: openai/gpt-oss-120b
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.9
+
+    # 4) GÜÇLÜ UCUZ — reasoning modeli, düşük fiyat (~$0.32/koşu; DeepSeek R1)
+    - label: deepseek-r1-GUCLU-UCUZ
+      provider: openrouter
+      model: deepseek/deepseek-r1-0528
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.9
+
+    # 5) ORTA (~$2'ye en iyi f/p) — 2026 üst Gemini pro (~$1.6/koşu; Google)
+    - label: gemini31pro-ORTA
+      provider: openrouter
+      model: google/gemini-3.1-pro-preview
+      api_key_env: OPENROUTER_API_KEY
+      temperature: 0.9
+
+  critic: dummy            # dummy | models_yaml (models.yaml'daki critic'i kullan)
+  output_dir: runs         # yarışmacı başına ayrı hafıza DB'si buraya yazılır

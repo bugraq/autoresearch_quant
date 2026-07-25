@@ -1,0 +1,305 @@
+"""
+Walking Skeleton — uçtan uca araştırma döngüsü.
+
+İki mod:
+  python main.py            Kampanya koşusu (hipotez üret -> test -> hafıza).
+                            HOLDOUT'A DOKUNMAZ — araştırma istediği kadar
+                            tekrarlanabilir, kilitli dönem tüketilmez.
+  python main.py --holdout  YALNIZCA holdout değerlendirmesi (LLM yok):
+                            hafızadaki kabul edilmiş adaylar kilitli dönemde
+                            BİR KEZ sınanır (one-shot, audit log). Kampanya
+                            bittiğinde, bilinçli bir kararla çağrılır.
+
+Bu ayrım Doküman 10.3'ün gereğidir: holdout her koşunun sonunda otomatik
+tüketilirse araştırma-değerlendirme ayrımı fiilen erir (insan-döngüsü sızıntısı).
+
+Modeli değiştirmek için: configs/models.yaml. Kod DEĞİŞMEZ.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+import yaml
+from dotenv import load_dotenv
+
+from contracts.hypothesis_spec import HypothesisSpec
+from dashboard import generate_dashboard
+from data import make_adapter, split_by_fraction
+from evaluation import build_report, print_report
+from holdout import HoldoutError, HoldoutService
+from llm import make_critic, make_provider
+from memory import MemoryStore
+from orchestrator import CampaignConfig, run_campaign
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(HERE, "research_memory.sqlite")
+HOLDOUT_DB = os.path.join(HERE, "holdout_audit.sqlite")
+
+
+def load_yaml(name: str) -> dict:
+    with open(os.path.join(HERE, "configs", name), encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def build_config(campaign: dict) -> CampaignConfig:
+    budget = campaign.get("budget", {})
+    risk = campaign.get("risk_constraints", {})
+    hpol = campaign.get("holdout_policy", {})
+    return CampaignConfig(
+        goal=campaign["goal"],
+        universe_description=campaign["universe_description"],
+        allowed_fields=campaign.get("allowed_fields", []),
+        allowed_operators=campaign.get("allowed_operators", []),
+        allowed_horizons=campaign.get("allowed_horizons", []),
+        allowed_rebalance=campaign.get("allowed_rebalance", []),
+        portfolio_types=campaign.get("portfolio_types", []),
+        model=str(campaign.get("model", "dsl_formula")),   # kampanya başına sabit model
+        max_experiments=int(budget.get("maximum_experiments", 8)),
+        max_llm_tokens=int(budget.get("maximum_llm_tokens", 300000)),
+        cost_bps=float(budget.get("cost_bps", 5.0)),
+        min_acceptance_sharpe=float(risk.get("min_acceptance_sharpe", 0.5)),
+        max_drawdown=float(risk.get("max_drawdown", 0.40)),
+        max_turnover=float(risk.get("max_turnover", 300.0)),
+        min_positive_folds=float(risk.get("min_positive_folds", 0.5)),
+        min_originality=float(risk.get("min_originality", 0.0)),
+        research_fraction=float(hpol.get("research_fraction", 0.7)),
+        parameter_optimization=bool(budget.get("parameter_optimization", False)),
+        anonymize_universe=bool(campaign.get("anonymize_universe", True)),
+        anonymous_description=(str(campaign["anonymous_description"])
+                               if campaign.get("anonymous_description") else None),
+    )
+
+
+def load_data(campaign: dict, data_cfg: dict, research_fraction: float):
+    """Veri yükle ve araştırma / KİLİTLİ holdout olarak böl (tek yerden)."""
+    src = data_cfg.get("source")
+    if src in ("yfinance", "sp500_pit", "sp600_pit", "binance"):
+        data_cfg.setdefault(src, {})
+        data_cfg[src]["start"] = str(campaign["start_date"])
+        data_cfg[src]["end"] = str(campaign["end_date"])
+    full = make_adapter(data_cfg).load()
+    # FUNDAMENTALS (value/quality): config'te fundamentals:true ise EDGAR'dan PIT
+    # book_to_market + roe alanları eklenir (bölmeden ÖNCE → hem araştırma hem
+    # holdout aynı alanları görür). İlk çağrı EDGAR'dan çeker (cache'lenir).
+    if data_cfg.get(src, {}).get("fundamentals"):
+        from data.edgar import add_fundamentals
+        print("  [edgar] PIT value/quality (book_to_market, roe) ekleniyor...")
+        add_fundamentals(full)
+    return split_by_fraction(full, research_fraction)
+
+
+def _backfill_audits(memory: MemoryStore, data, cfg: CampaignConfig) -> None:
+    """Reviewer raporu olmayan kabullere Backtest Auditor raporu üret (geriye-uyum).
+
+    Eski kabuller auditor özelliğinden önce kaydedildiği için reviews_json boştur;
+    veri yüklüyken deterministik denetimi çalıştırıp kaydı güncelleriz.
+    """
+    pending = memory.accepted_without_reviews()
+    if not pending:
+        return
+    from agents.backtest_auditor import BacktestAuditor
+    from backtest import run_backtest
+    from dsl import compile_hypothesis
+    auditor = BacktestAuditor()
+    done = 0
+    for row_id, _hid, hj in pending:
+        try:
+            hyp = HypothesisSpec.model_validate_json(hj)
+            graph = compile_hypothesis(hyp)
+            res = run_backtest(graph, hyp, data, cost_bps=cfg.cost_bps)
+            memory.set_reviews(row_id, [auditor.audit(hyp, res, data, cfg.cost_bps)])
+            done += 1
+        except Exception:  # noqa: BLE001 — bir kayıt patlarsa diğerleri sürsün
+            pass
+    if done:
+        print(f"[reviewer] {done} eski kabule Backtest Auditor raporu geriye-dolduruldu.")
+
+
+def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data) -> None:
+    """--holdout: hafızadaki kabul edilmiş adayları kilitli dönemde sına.
+
+    LLM'siz, deterministik son sınav. One-shot: aynı aday ikinci kez
+    değerlendirilMEZ (audit DB koşular arası korunur).
+    """
+    if not os.path.exists(DB_PATH):
+        print("Hafıza yok (research_memory.sqlite). Önce kampanya koş: python main.py")
+        return
+    memory = MemoryStore(DB_PATH)
+    policy = campaign.get("holdout_policy", {}) or {}
+    max_cand = int(policy.get("maximum_candidates", 20))
+    candidates = memory.accepted_hypotheses(limit=max_cand)
+    if not candidates:
+        print("Holdout adayı yok: hafızada kabul edilmiş hipotez bulunmuyor.")
+        memory.close()
+        return
+
+    holdout = HoldoutService(holdout_data, audit_path=HOLDOUT_DB,
+                             max_candidates=max_cand,
+                             min_sharpe=cfg.min_acceptance_sharpe,
+                             cost_bps=cfg.cost_bps)
+    print(f"=== HOLDOUT (kilitli dönem, one-shot, {len(candidates)} aday) ===")
+    for hid, hjson, research_sharpe in candidates:
+        hyp = HypothesisSpec.model_validate_json(hjson)
+        try:
+            res = holdout.evaluate(hyp)
+        except HoldoutError as e:
+            print(f"  {hid}  atlandı: {e}")
+            continue
+        flag = "GEÇTİ" if res.passed else "KALDI"
+        print(f"  {hid}  araştırma Sharpe={research_sharpe:.2f} -> "
+              f"holdout Sharpe={res.sharpe:.2f}  [{flag}]")
+    holdout.close()
+    memory.close()
+
+    out = generate_dashboard(DB_PATH, HOLDOUT_DB, os.path.join(HERE, "dashboard.html"),
+                             campaign_name=campaign["name"])
+    print(f"\nDashboard: {out}")
+
+
+def main() -> None:
+    # Windows konsolu (cp1254) LLM'den gelen özel karakterlerde (em-dash, emoji)
+    # patlayabilir; --detay çıktısı ham hipotez metnini basar. errors='replace'
+    # ile güvene al (kampanya bir print yüzünden düşmesin).
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+    parser = argparse.ArgumentParser(description="Otonom quant araştırma kampanyası")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Yeni kampanya: hafızayı SIFIRLA. Varsayılan: mevcut kampanyaya DEVAM et.")
+    parser.add_argument("--holdout", action="store_true",
+                        help="Kampanya KOŞMA; hafızadaki kabul edilmiş adayları kilitli "
+                             "holdout döneminde değerlendir (one-shot, LLM'siz).")
+    parser.add_argument("--live", action="store_true",
+                        help="Canlı ajan terminali: kampanyayı gerçek zamanlı panelde "
+                             "izle (rich TUI). Mantık değişmez, yalnızca görünüm.")
+    parser.add_argument("--detay", action="store_true",
+                        help="DETAYLI çıktı: her deneyin her adımı (üretim, derleme, "
+                             "sızıntı, sinyal, backtest fold'ları, gate) tek tek basılır.")
+    args = parser.parse_args()
+    if args.fresh and args.holdout:
+        parser.error("--fresh ile --holdout birlikte kullanılamaz "
+                     "(sıfırlanmış hafızada holdout adayı olmaz).")
+
+    load_dotenv(os.path.join(HERE, ".env"))   # API key'i ortama yükle (koda girmez)
+    campaign = load_yaml("campaign.yaml")["campaign"]
+    models = load_yaml("models.yaml")["models"]
+    data_cfg = load_yaml("data.yaml")["data"]
+    cfg = build_config(campaign)
+
+    # Veri her iki modda da gerekli (holdout modu kilitli dilimi kullanır).
+    data, holdout_data = load_data(campaign, data_cfg, cfg.research_fraction)
+
+    if args.holdout:
+        run_holdout_mode(campaign, cfg, holdout_data)
+        return
+
+    # ---- Kampanya modu (holdout'a DOKUNULMAZ) ----
+    # Model TAK-ÇALIŞTIR: üretici + bağımsız eleştirmen config'ten kurulur
+    gen_cfg = models["hypothesis_generator"]
+    provider = make_provider(gen_cfg)
+    critic = make_critic(models.get("quant_critic", {"provider": "dummy"}))
+
+    # Literatür grounding (Doküman 4.3): hipotez üreticiye 'bilinen anomali'
+    # tohumları ver. VARSAYILAN = statik corpus (reproducible + point-in-time
+    # güvenli; bkz. agents/literature.py başlığı). models.yaml -> web_search: true
+    # ile isteğe bağlı canlı arama denenir (reproducibility/look-ahead riskli).
+    from agents.literature import load_literature_mechanisms
+    if gen_cfg.get("web_search") and hasattr(provider, "client"):
+        from agents.literature import fetch_literature_mechanisms
+        from orchestrator.loop import ANONYMOUS_UNIVERSE
+        print("Literatür aranıyor (web_search, en fazla ~90 sn; olmazsa statik corpus)...")
+        # Anonimleştirme açıkken literatür ajanı da ticker/tarih GÖRMEZ.
+        lit_universe = ((cfg.anonymous_description or ANONYMOUS_UNIVERSE)
+                        if cfg.anonymize_universe else campaign["universe_description"])
+        literature = fetch_literature_mechanisms(
+            provider.client, provider.model, lit_universe)
+    else:
+        # Corpus evrene göre seçilir: kripto evrenine HİSSE anomalisi (52-hafta,
+        # ay-sonu, Amihud) fısıldamak aramayı kör bırakır — perpetual piyasanın
+        # kendi mekanizmaları var (funding/kalabalıklık, tasfiye kaskadı).
+        domain = str(campaign.get("literature_domain", "equity"))
+        literature = load_literature_mechanisms(domain=domain)
+        print(f"Literatür (statik corpus, reproducible, alan={domain}):")
+    for m in literature:
+        print(f"  • {m[:100]}")
+    print()
+
+    # DEVAM (varsayılan) veya SIFIRLA (--fresh). Devam: novelty/çoklu-test/öğrenme
+    # koşular arası birikir; aynı hipotez tekrar üretilmez (Doküman: campaign = çok deney).
+    if args.fresh:
+        for p in (DB_PATH, HOLDOUT_DB):
+            if os.path.exists(p):
+                os.remove(p)
+        print("(--fresh) Yeni kampanya: hafıza sıfırlandı.")
+    memory = MemoryStore(DB_PATH)
+
+    print(f"=== Kampanya: {campaign['name']} ===")
+    print(f"Evren: {cfg.universe_description}")
+    print(f"Sağlayıcı: {models['hypothesis_generator']['provider']} | "
+          f"Bütçe: {cfg.max_experiments} deney\n")
+
+    if args.live:
+        # Canlı panel: loop'un DÜZ metin print'leri yutulur (redirect), her karar
+        # on_event kancasıyla panele akar. Panel GERÇEK stdout'a basar (reporter
+        # file=real_out) → redirect'ten etkilenmez. TUI süs; kanca güvenli (kırılsa
+        # kampanya sürer). Kampanya bitince özet normal basılır.
+        import io as _io
+        import sys as _sys
+        from contextlib import redirect_stdout
+
+        from ui.live import LiveReporter
+        real_out = _sys.stdout
+        try:
+            real_out.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+        with LiveReporter(file=real_out) as reporter:
+            with redirect_stdout(_io.StringIO()):
+                run_campaign(provider, data, memory, cfg, critic=critic,
+                             literature=literature, on_event=reporter.on_event)
+    else:
+        run_campaign(provider, data, memory, cfg, critic=critic, literature=literature,
+                     verbose=args.detay)
+
+    # GERİYE-DOLDURMA: reviewer özelliğinden önce kabul edilmiş hipotezlerin
+    # Backtest Auditor raporu yok. Veri hâlâ yüklüyken üret (dashboard tam olsun).
+    _backfill_audits(memory, data, cfg)
+
+    print("\n--- ÖZET ---")
+    print(f"Toplam deney (multiple-testing muhasebesi): {memory.total_experiments()}")
+    print(f"Karar dağılımı: {memory.summary_by_decision()}")
+    print("\nLeaderboard (kabul edilenler, Sharpe'a göre):")
+    for hid, title, sharpe, dd in memory.leaderboard():
+        print(f"  {hid}  {title:32s}  Sharpe={sharpe:.2f}  MaxDD=%{(dd or 0)*100:.0f}")
+
+    # Multiple testing raporu — "kabul" != "istatistiksel geçerli"
+    backtested = memory.backtested_experiments()
+    rows = build_report(backtested)
+    print_report(rows, n_trials=len(backtested))
+
+    # Holdout BİLEREK burada koşulmaz (Doküman 10.3): her koşuda otomatik
+    # tüketilseydi kilitli dönem fiilen araştırma verisine dönerdi.
+    n_accepted = len(memory.accepted_hypotheses())
+    if n_accepted:
+        print(f"\nHoldout adayı bekliyor: {n_accepted} kabul edilmiş hipotez. "
+              f"Kampanya bitti diyorsan: python main.py --holdout")
+
+    # Token/maliyet görünürlüğü (Doküman 17.3) — üretici + eleştirmen
+    pt = getattr(provider, "total_prompt_tokens", 0) + getattr(critic, "total_prompt_tokens", 0)
+    ct = getattr(provider, "total_completion_tokens", 0) + getattr(critic, "total_completion_tokens", 0)
+    if pt or ct:
+        print(f"\nToken kullanımı (üretici+critic): prompt={pt}, completion={ct}, toplam={pt+ct}")
+
+    memory.close()
+
+    # Research dashboard (tek dosya, offline) — hocaya göstermek için
+    out = generate_dashboard(DB_PATH, HOLDOUT_DB, os.path.join(HERE, "dashboard.html"),
+                             campaign_name=campaign["name"])
+    print(f"\nDashboard: {out}")
+
+
+if __name__ == "__main__":
+    main()
