@@ -61,6 +61,7 @@ th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border)
 tr:last-child td { border-bottom:none; }
 th { color:var(--muted); font-weight:600; font-size:12px; }
 td.num { text-align:right; font-variant-numeric:tabular-nums; }
+td.num.good { color:var(--good); font-weight:600; } td.num.bad { color:var(--bad); font-weight:600; }
 .bar { height:22px; border-radius:5px; background:var(--accent); min-width:3px; }
 .bar.good { background:var(--good); } .bar.bad { background:var(--bad); }
 .frow { display:flex; align-items:center; gap:12px; margin:7px 0; }
@@ -151,18 +152,47 @@ def _funnel(conn) -> str:
     return '<div class="card">' + "".join(rows) + "</div>"
 
 
+def _total_return_pct(returns_json: "str | None") -> "float | None":
+    """Net getiri serisinden birikimli getiriyi (%) hesaplar: prod(1+r)-1.
+    "Bu stratejiye para koysaydın % kaç kazanırdın" — trader'ın anladığı sayı."""
+    if not returns_json:
+        return None
+    try:
+        acc = 1.0
+        for x in json.loads(returns_json):
+            acc *= (1.0 + float(x))
+        return (acc - 1.0) * 100.0
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _ret_cell(returns_json: "str | None") -> str:
+    """Getiri hücresi — yeşil kazanç / kırmızı kayıp."""
+    tot = _total_return_pct(returns_json)
+    if tot is None:
+        return '<td class="num">—</td>'
+    cls = "good" if tot >= 0 else "bad"
+    return f'<td class="num {cls}">{tot:+.0f}%</td>'
+
+
 def _leaderboard(conn) -> str:
-    rows = _q(conn, """SELECT hypothesis_id, title, sharpe, max_drawdown FROM experiment
+    rows = _q(conn, """SELECT hypothesis_id, title, sharpe, max_drawdown, returns_json
+                       FROM experiment
                        WHERE decision='accept' AND sharpe IS NOT NULL
                        ORDER BY sharpe DESC LIMIT 20""")
     if not rows:
         return '<div class="card desc">Bu kampanyada kabul edilen strateji olmadı.</div>'
     body = "".join(
         f"<tr><td>{_esc(h)}</td><td>{_esc(t)}</td>"
-        f'<td class="num">{s:.2f}</td><td class="num">%{(d or 0)*100:.0f}</td></tr>'
-        for h, t, s, d in rows)
+        f'<td class="num">{s:.2f}</td>{_ret_cell(rj)}'
+        f'<td class="num">%{(d or 0)*100:.0f}</td></tr>'
+        for h, t, s, d, rj in rows)
     return ('<div class="card"><table><tr><th>Kimlik</th><th>Strateji</th>'
-            '<th>Sharpe</th><th>Maks. düşüş</th></tr>' + body + "</table></div>")
+            '<th>Sharpe</th><th>Getiri</th><th>Maks. düşüş</th></tr>'
+            + body + "</table></div>"
+            + '<div class="desc" style="margin-top:6px">Getiri = araştırma '
+            'döneminde birikimli kazanç (para % kaç değişti). Sharpe = risk başına '
+            'getiri (yüksek iyi). Bunlar araştırma dönemi; kesin yargı holdout.</div>')
 
 
 def _multiple_testing(memory_db: str) -> str:
@@ -259,6 +289,8 @@ _FIELD_TR = {
     "close": "kapanış fiyatı", "open": "açılış fiyatı", "high": "gün-içi en yüksek",
     "low": "gün-içi en düşük", "adjusted_close": "düzeltilmiş kapanış",
     "volume": "işlem hacmi", "dollar_volume": "dolar hacmi", "market_cap": "piyasa değeri",
+    "funding_rate": "funding oranı", "book_to_market": "defter/piyasa değeri (ucuzluk)",
+    "roe": "özkaynak kârlılığı (ROE)",
 }
 
 
@@ -323,20 +355,112 @@ def _describe_node(e: dict, feats: dict) -> str:
     return f"{op}({a})"
 
 
+# Yönü koruyup yalnızca ölçekleyen/sıralayan katmanlar — çekirdek metriği bulmak
+# için bunları soyarız (sinyalin AL/SAT yönünü değiştirmezler).
+_RANK_LIKE_OPS = {"cross_sectional_rank", "quantile", "rolling_rank"}
+
+
+def _core_and_direction(e: dict, feats: dict) -> "tuple[str, bool]":
+    """Sinyal ağacından çekirdek metriği ve YÖNÜ çıkarır.
+
+    negate/rank/feature_ref katmanlarını soyar. Döner: (çekirdek düz-Türkçe,
+    ters_mi). ters_mi=True ise DÜŞÜK değer AL demektir (negate sayısı tek).
+    Böylece "tersi — düşük olanı öne alır" gibi kafa karıştıran ara ifadeler
+    yerine doğrudan "en düşük olanı AL" diyebiliriz.
+    """
+    inverted = False
+    node = e
+    seen = 0
+    while isinstance(node, dict) and seen < 12:
+        seen += 1
+        op = node.get("op")
+        ins = [i for i in node.get("inputs", []) if isinstance(i, dict)]
+        if op == "negate" and ins:
+            inverted = not inverted
+            node = ins[0]
+        elif op in _RANK_LIKE_OPS and ins:
+            node = ins[0]                       # sıralama: yönü korur
+        elif op == "feature_ref":
+            name = node.get("name")
+            if name in feats:
+                node = feats[name]              # feature tanımına in
+            else:
+                return name or "?", inverted
+        else:
+            break
+    return _describe_node(node, feats), inverted
+
+
+_REBALANCE_TR = {"daily": "her bar", "weekly": "haftalık", "monthly": "aylık"}
+_MODEL_TR = {
+    "linear_regression": "doğrusal regresyon", "ridge": "ridge regresyon",
+    "naive_bayes": "olasılık (naive Bayes)", "random_forest": "rastgele orman",
+    "gradient_boosting": "gradyan artırma",
+}
+
+
+def _fields_used(e: dict, feats: dict, acc: set) -> None:
+    """Bir ifade ağacında kullanılan ham veri alanlarını (düz Türkçe) toplar."""
+    if not isinstance(e, dict):
+        return
+    op = e.get("op")
+    if op == "field":
+        acc.add(_FIELD_TR.get(e.get("field"), e.get("field") or "?"))
+    elif op == "feature_ref" and e.get("name") in feats:
+        _fields_used(feats[e["name"]], feats, acc)
+    for i in e.get("inputs", []):
+        _fields_used(i, feats, acc)
+
+
+def _rebalance_tail(h: dict) -> str:
+    ex = h.get("execution", {})
+    reb, hold = ex.get("rebalance"), ex.get("holding_period_days")
+    if reb and reb != "daily":
+        return f" Pozisyonlar {_REBALANCE_TR.get(reb, reb)} yenilenir."
+    if hold and int(hold) > 1:
+        return f" Her pozisyon ~{int(hold)} bar tutulur."
+    return ""
+
+
 def _plain_strategy(h: dict) -> str:
-    """Hipotezi tek cümlelik düz Türkçe stratejiye çevirir (sinyal + portföy)."""
+    """Hipotezi tek cümlelik, TRADER'IN ANLAYACAĞI düz Türkçeye çevirir.
+
+    - Model varsa (random_forest vb.): "model şu göstergelerden getiriyi tahmin
+      eder; en yüksek beklenen AL, en düşük SAT."
+    - Formül ise: "<metrik> en <yüksek/düşük> olanı AL, ...SAT." Yön negate'ten okunur.
+    """
     feats = {f.get("name"): f.get("expression", {})
              for f in h.get("features", []) if isinstance(f, dict)}
-    core = _describe_node(h.get("signal", {}), feats)
     ptype = h.get("portfolio", {}).get("type", "")
+    tail = _rebalance_tail(h)
+    mtype = h.get("model", {}).get("type", "dsl_formula")
+
+    # --- Model modu: sinyal DSL değil, model tahmini. Dürüst anlatım. ---
+    if mtype != "dsl_formula":
+        fset: set = set()
+        for f in h.get("features", []):
+            if isinstance(f, dict):
+                _fields_used(f.get("expression", {}), feats, fset)
+        flist = ", ".join(sorted(fset)) if fset else "fiyat/hacim"
+        model_tr = _MODEL_TR.get(mtype, mtype)
+        long_short = "long_short" in ptype
+        sat = ", en düşük getiri beklenenleri açığa SAT" if long_short else ""
+        return (f"Bir <b>{model_tr}</b> modeli, <b>{flist}</b> göstergelerinden her "
+                f"varlığın yakın gelecekteki getirisini tahmin eder; en yüksek getiri "
+                f"beklenen varlıkları AL{sat}." + tail)
+
+    # --- Formül modu: yönü negate'ten oku, doğrudan AL/SAT söyle. ---
+    core, inverted = _core_and_direction(h.get("signal", {}), feats)
+    hi_al = not inverted
+    yuksek, dusuk = "en <b>yüksek</b>", "en <b>düşük</b>"
+    al_uc, sat_uc = (yuksek, dusuk) if hi_al else (dusuk, yuksek)
     if "long_short" in ptype:
-        action = ("varlıkları bu değere göre sıralar; en yüksek olanları AL (long), "
-                  "en düşük olanları SAT (short)")
+        action = f"<b>{core}</b> {al_uc} olan varlıkları AL, {sat_uc} olanları açığa SAT"
     elif "long_only" in ptype:
-        action = "en yüksek değere sahip varlıkları AL (sadece long), gerisini alma"
+        action = f"<b>{core}</b> {al_uc} olan varlıkları AL (sadece alım yapar)"
     else:
-        action = "varlıkları bu değere göre seçer"
-    return f"Her bar her varlık için <b>{core}</b> hesaplanır; sonra {action}."
+        action = f"<b>{core}</b> değerine göre varlık seçer"
+    return action + "." + tail
 
 
 # İssue tipi -> insan-dostu Türkçe başlık (reddetme nedeni)
@@ -379,21 +503,25 @@ def _humanize_issue(issues_json: str | None) -> str:
 
 def _details(conn) -> str:
     """Hipotez detayı (Doküman 20) — kabul edilen stratejilerin TAM içeriği."""
-    rows = _q(conn, """SELECT hypothesis_id, sharpe, hypothesis_json, model_name, prompt_hash, seed
+    rows = _q(conn, """SELECT hypothesis_id, sharpe, hypothesis_json, model_name,
+                              prompt_hash, seed, returns_json
                        FROM experiment
                        WHERE decision='accept' AND hypothesis_json IS NOT NULL
                        ORDER BY sharpe DESC LIMIT 6""")
     if not rows:
         return '<div class="card desc">Detay gösterilecek kabul edilmiş strateji yok.</div>'
     cards = []
-    for hid, sharpe, hj, model_name, prompt_hash, seed in rows:
+    for hid, sharpe, hj, model_name, prompt_hash, seed, rj in rows:
         h = json.loads(hj)
         mech = h.get("economic_mechanism", {})
         fails = mech.get("expected_failure_conditions", []) or []
         f = h.get("falsification", {})
+        tot = _total_return_pct(rj)
+        ret_txt = (f' · <span style="color:var(--{"good" if tot >= 0 else "bad"})">'
+                   f'getiri {tot:+.0f}%</span>') if tot is not None else ""
         cards.append(f"""<div class="detail">
   <div class="dh"><span class="did">{_esc(hid)}</span> {_esc(h.get('title',''))}
-    <span class="dsh">Sharpe {sharpe:.2f}</span></div>
+    <span class="dsh">Sharpe {sharpe:.2f}{ret_txt}</span></div>
   <div class="drow"><b>Ne yapıyor (düz anlatım):</b> {_plain_strategy(h)}</div>
   <div class="drow"><b>İddia:</b> {_esc(h.get('claim',''))}</div>
   <div class="drow"><b>Ekonomik mekanizma:</b> {_esc(mech.get('type',''))} — {_esc(mech.get('description',''))}</div>
@@ -648,7 +776,8 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
     return out_path
 
 
-if __name__ == "__main__":
+def _cli_main() -> None:
+    """Komut satırından dashboard üret. `python -m dashboard` bunu çağırır."""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # Kampanya adını aktif config'ten oku (eski sabit isim yerine güncel ad).
     name = "arastirma_kampanyasi"
@@ -667,3 +796,7 @@ if __name__ == "__main__":
         os.path.join(here, "dashboard.html"),
         campaign_name=name)
     print(f"Dashboard yazıldı: {out}")
+
+
+if __name__ == "__main__":
+    _cli_main()

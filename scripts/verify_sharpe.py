@@ -235,6 +235,11 @@ def export(net_pnl, turnover_t, stats) -> None:
 
 
 def main() -> None:
+    # Windows konsolu (cp1254) özel karakterlerde patlamasın.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
     _line("SHARPE DOGRULAMA RAPORU — motor gercekten dogru mu?")
     hyp, data = build_case()
     graph = compile_hypothesis(hyp)

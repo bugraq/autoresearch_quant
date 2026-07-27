@@ -121,7 +121,7 @@ ezberlemek yok:
 *(Eski streamlit web arayüzü emekli — `arsiv/`'de; işlevini agent.py + dashboard karşılıyor.)*
 
 `main.py` çalışınca `dashboard.html` üretilir (offline, tarayıcıda aç). Ayrıca:
-`python -m dashboard.report`
+`python -m dashboard`
 
 ### Şeffaflık ve doğrulama araçları (`scripts/`)
 Sistemin "kara kutu" olmadığını gösteren, hocaya sunum için üç araç. Hepsi
