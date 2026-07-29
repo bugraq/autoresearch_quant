@@ -50,8 +50,10 @@ bitmeyen versiyonu.
 ### Arka plan: FAZ 6 — ARAMA KALİTESİ (tamamlanan)
 **Özgünlük → kombinasyon → uzun-koşu.**
 
-5 domain denendi (S&P large-cap, kripto v1, fundamentals, small-cap, kripto funding),
-hepsi null. Funding en umut vericisiydi (araştırmada güçlü) ama holdout+portföy eledi.
+5 domain denendi (S&P large-cap, kripto v1, fundamentals, small-cap, kripto funding).
+Funding en umut vericisiydi. *(29.07.2026 DÜZELTME: "hepsi null" hükmü hatalı bir
+holdout değerlendiricisinden geliyordu — funding hipotezlerinden biri düzeltilmiş
+sınavdan +0.72 ile geçti. Ayrıntı: Faz 5 başındaki düzeltme notu.)*
 Literatür taraması (WorldQuant, AlphaAgent arXiv:2502.16789, alpha-decay makaleleri)
 şunu netleştirdi: **sorun "tek güçlü sinyal" hedefinin KENDİSİ.** Kimse öyle çalışmıyor;
 WorldQuant ~4M zayıf sinyali birleştiriyor, "başarı" IC~0.02 (kıl payı ama tutarlı).
@@ -147,7 +149,40 @@ birleştirme). Çoklu-test (FDR/DSR) + kilitli holdout. 34 test paketi.
 katar, daha çok deneme eşiği YÜKSELTİR. Kripto bunu kanıtladı: DSR 0.98'i geçti,
 holdout yine eledi.*
 
-**Faz 5 — TAMAMLANDI. Sonuç: funding de holdout'ta çöktü (5. null).**
+> ### ⚠ DÜZELTME (29.07.2026) — aşağıdaki holdout sayıları HATALI bir değerlendiriciden çıktı
+>
+> Kilitli dönem, tek başına değerlendiriliyordu. İki sonucu vardı:
+> 1. Rolling pencereler holdout'un başında NaN kalıyordu (kapsama **%83**).
+> 2. Daha kritiği: walk-forward ML modeli **holdout'un İÇİNDE yeniden eğitiliyordu.**
+>    Yani sınav, araştırmada kabul edilen modeli değil **başka bir modeli** ölçüyordu.
+>
+> Düzeltme (`v2-warmup`): araştırma dilimi geçmiş olarak verilir; bilgi akışı tek
+> yönlü (geçmiş→gelecek) olduğu için sızıntı değildir. Aynı hata `forward_test.py`'da
+> da vardı; iki bağımsız yol artık aynı sayıyı veriyor.
+>
+> **Düzeltilmiş sonuç (aktif kampanya, `v2-warmup`):**
+>
+> | hipotez | araştırma | holdout (v1, hatalı) | holdout (v2, doğru) |
+> |---|---|---|---|
+> | hyp_0010 | +0.97 | −1.06 | **−0.32** (kaldı) |
+> | hyp_0033 | +0.66 | −0.36 | **+0.72 → GEÇTİ** |
+>
+> Yani **"5. null" hükmü artık geçerli değil:** sistemin kendi bulduğu bir hipotez
+> (RF + funding kalabalıklığı + momentum + likidite + gün-içi baskı) kilitli dönemden
+> sağ çıktı. hyp_0010 ise gerçekten çöküyor (−1.29 fark = aşırı uyum) — sınav çalışıyor.
+>
+> Aşağıdaki eski koşulara ait sayılar **silinmedi**: o koşular gerçekten öyle
+> raporlanmıştı ve kayıt dürüstlüğü için duruyorlar. Ama hepsi `v1` değerlendiriciden
+> geldiği için **güvenilir değildir**; ML modu kullanan her holdout sonucu bu
+> hatadan etkilenmiştir. `holdout_audit.sqlite`'ta eski kayıtlar `invalidated`
+> işaretli (gerekçe + tarih + değerlendirici sürümüyle), silinmedi.
+>
+> Uyarı payı: düzeltilmiş sonuç **tek bir kilitli dönemdir**. İleri-test (2025→bugün)
+> aynı stratejide **rejim-bağımlılık** gösteriyor — "alpha bulduk" demek için erken.
+
+**Faz 5 — TAMAMLANDI. Sonuç (DÜZELTİLDİ): funding hipotezlerinden BİRİ holdout'tan
+sağ çıktı (hyp_0033, +0.72). Eskiden "5. null" yazıyordu; o hüküm hatalı bir
+değerlendiriciye dayanıyordu — yukarıdaki düzeltme notuna bak.**
 1. ✅ `data/binance.py` — funding + OHLCV (Session keep-alive, retry, cache'li)
 2. ✅ **Ölü coin havuzu** — LUNA (17.505→0.008), FTT dahil; 22/28 yüklendi
 3. ✅ DSL'e `funding_rate` (info_tick=close_t; funding 8 saatte bir → günlük toplam
