@@ -47,6 +47,45 @@ bitmeyen versiyonu.
 
 ---
 
+
+## ★ ÜÇ-DÖNEM TESTİ (29.07.2026) — tek holdout YETMİYOR
+
+Kampanya v4, kilitli dönemde **3/3 geçti**. Sadece ona bakılsaydı "alpha bulduk"
+denirdi. Üçüncü, bağımsız bir örneklem-dışı dönem (2025→bugün, sistemin HİÇ
+görmediği taze veri) bunu yalanladı:
+
+| hipotez | kampanya | araştırma | HOLDOUT (23-24) | İLERİ-TEST (25→) | ileri toplam |
+|---|---|---|---|---|---|
+| hyp_0033 | v2 | +0.66 | +0.72 | **+0.37** | **+8%** |
+| hyp_0021 | v4 | +1.14 | +0.93 | −0.36 | −44% |
+| hyp_0025 | v4 | +0.86 | +0.59 | −1.46 | −80% |
+| hyp_0002 | v4 | +0.61 | +1.29 | −0.05 | −29% |
+
+**Üç bulgu:**
+
+1. **Tek kilitli dönem yeterli kanıt değildir.** v4'ün üç adayı da holdout'u
+   geçti, üçü de taze veride çöktü. Holdout (2023-24) tek bir REJİM çekilişidir;
+   onu geçmek "genelliyor" demek değil, "o rejimde de tuttu" demektir.
+
+2. **Çoklu-test katmanı HAKLIYDI, holdout YANILTTI.** Kabul edilenlerin DSR'ı
+   0.20 ve 0.09'du — istatistik "anlamlı değil" diyordu. Holdout "geçti" dedi.
+   İleri-test istatistiği doğruladı. Yani katmanlar birbirini denetliyor ve
+   *hiçbiri tek başına yeterli değil* (Faz 5 dersinin genişlemiş hâli).
+
+3. **Yüksek in-sample Sharpe = daha sert çöküş.** En yüksek araştırma Sharpe'lı
+   aday (hyp_0021, +1.14) en sert düştü (−44%); en düşükler (hyp_0002 +0.61,
+   hyp_0033 +0.66) en az. Klasik aşırı-uyum imzası. "En iyi Sharpe'ı seç"
+   sezgisi burada tam ters yönde çalışıyor.
+
+**Tek hayatta kalan:** hyp_0033 (v2) üç dönemde de pozitif (+0.66 / +0.72 /
++0.37). ABARTILMAMALI: +%8/1.5 yıl zayıftır, DSR'ı 0.20'dir (çoklu-test
+süzgecini geçmedi) ve çok sayıda deneme içinden çıkmıştır. Doğru ifade
+"alpha bulundu" değil, **"tek aday henüz ölmedi"**dir.
+
+**Metodolojik sonuç (bu projenin katkısı):** kilitli holdout tek başına
+yetmiyor; BİRDEN FAZLA bağımsız OOS rejimi gerekiyor. Sistem bunu kendi
+verisiyle ampirik olarak gösterdi.
+
 ### Arka plan: FAZ 6 — ARAMA KALİTESİ (tamamlanan)
 **Özgünlük → kombinasyon → uzun-koşu.**
 

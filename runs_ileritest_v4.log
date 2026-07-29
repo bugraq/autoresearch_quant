@@ -1,0 +1,82 @@
+
+══════════════════════════════════════════════════════════════════════════════
+  İLERİ-TEST — strateji zaman içinde tutuyor mu? (tüm OOS dönemleri)
+══════════════════════════════════════════════════════════════════════════════
+
+  DİKKAT: tek bir parlak döneme kanmak, kendini kandırmanın en kolay yoludur.
+  Bu araç stratejiyi TÜM örneklem-dışı (OOS) dönemlerde yan yana koyar:
+    • Holdout   — sistemin gördüğü verinin kilitli son dilimi (2023-24)
+    • İleri-test — sistemin gördüğü tarihten SONRAKİ taze zaman (2025→bugün)
+  Gerçek alpha HER OOS döneminde tutar. Bir dönem uçup diğerinde çökmek =
+  rejim-bağımlılık = güvenilmez sinyal.
+
+  Aday strateji     : hyp_0021  "Multi-factor crypto perpetual alpha with microstructure, volatility and funding regime via random forest"
+                      (araştırma Sharpe ~+1.14)
+  Neden bu aday     : kilitli dönemi GEÇEN aday
+  Sistemin gördüğü  : ... 2024-12-31  (araştırma + holdout buraya kadar)
+  İLERİ-TEST dönemi : 2025-01-01  →  2026-07-29   (574 gün, EL DEĞMEMİŞ)
+
+  Bu dönem sistemin hiç görmediği taze veridir — ne eğitimde, ne holdout'ta.
+  Kabul edilen stratejiyi burada kâğıt üzerinde gün gün koşuyoruz.
+
+  Sistemin gördüğü dönem yükleniyor (araştırma + kilitli holdout)...
+  [binance] 50/665 sembol indirildi
+  [binance] 300/665 sembol indirildi
+  [binance] 350/665 sembol indirildi
+  [binance] 450/665 sembol indirildi
+  [binance] 500/665 sembol indirildi
+  [binance] 550/665 sembol indirildi
+  [binance] 600/665 sembol indirildi
+  [binance] 650/665 sembol indirildi
+  [binance] 369 sembol × 5479 bar (8h) | funding'i olan: 369 | ölü coin yüklendi: 22/28
+  [binance] veri gelmeyen 296 sembol (örnek: ['0GUSDT', '1000000BOBUSDT', '2ZUSDT', '42USDT', '4USDT'])
+
+  Taze/el değmemiş dönem indiriliyor: 2025-01-01 → 2026-07-29
+    ~665 sembol × 2 uç nokta (fiyat + funding), Binance hız sınırlı.
+    İLK koşuda bu adım 1 SAAT veya daha uzun sürebilir — TAKILMADI,
+    indiriyor. Sonraki koşular cache'ten saniyeler içinde açılır.
+    (İlerlemeyi görmek için: data/binance_cache klasöründeki dosya sayısı artar.)
+  [binance] 50/665 sembol indirildi
+  [binance] 100/665 sembol indirildi
+  [binance] 150/665 sembol indirildi
+  [binance] 200/665 sembol indirildi
+  [binance] 250/665 sembol indirildi
+  [binance] 300/665 sembol indirildi
+  [binance] 350/665 sembol indirildi
+  [binance] 400/665 sembol indirildi
+  [binance] 450/665 sembol indirildi
+  [binance] 500/665 sembol indirildi
+  [binance] 550/665 sembol indirildi
+  [binance] 600/665 sembol indirildi
+  [binance] 650/665 sembol indirildi
+  [binance] 651 sembol × 1723 bar (8h) | funding'i olan: 651 | ölü coin yüklendi: 15/28
+  [binance] veri gelmeyen 14 sembol (örnek: ['AERGOUSDT', 'ANCUSDT', 'BTCSTUSDT', 'BTSUSDT', 'COCOSUSDT'])
+
+──────────────────────────────────────────────────────────────────────────────
+  STRATEJİ ZAMAN İÇİNDE  (10 bps masraf; * = örneklem-DIŞI)
+──────────────────────────────────────────────────────────────────────────────
+
+  Dönem                            Sharpe    Toplam   MaxDD
+  ---------------------------------------------------------
+  Araştırma (in-sample)             +1.02      +99%     29%
+  Holdout (2023-24) *OOS            +0.93      +27%     12%
+  İleri-test (2025→bugün) *OOS      -0.36      -44%     62%
+
+  İleri-test biriken getiri eğrisi:
+    ▇▇▇▇▆▆▆▅▅▅▆▆▇▇▇▇▇▇▇▇███▇▆▆▃▃▄▄▄▃▄▄▄▃▄▃▃▃▂▁▁▁▂▁▁▃▂▁▂▂▂▃▂▁▁▂▂▂
+
+──────────────────────────────────────────────────────────────────────────────
+  NE ANLAMA GELİYOR? — asıl soru: OOS dönemleri TUTARLI mı?
+──────────────────────────────────────────────────────────────────────────────
+
+  ⚠ REJİM-BAĞIMLI — güvenilmez sinyal.
+  Strateji in-sample'da parlıyor (+1.02) ama örneklem-dışı dönemler
+  ÇELİŞİYOR: holdout pozitif, ileri-test negatif.
+  Bir OOS döneminde uçup diğerinde çökmek, performansın piyasa REJİMİNE
+  bağlı olduğunu (dönem şansı) gösterir — HER koşulda tutan bir alpha değil.
+
+  Bu tam da tek bir parlak dönemin (örn. yalnızca ileri-test) neden YANILTICI
+  olduğunun kanıtı: holdout'u gizleyip yalnız ileri-testi gösterseydik
+  "alpha bulduk" derdik. Sistem (ve çok-dönem OOS) bunu yakalıyor.
+══════════════════════════════════════════════════════════════════════════════
+
