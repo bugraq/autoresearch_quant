@@ -30,6 +30,13 @@ DEFAULT_RETRIES = 1
 RATE_LIMIT_RETRIES = 4
 RATE_LIMIT_BACKOFF = 20.0   # saniye; 20, 40, 60, 80 -> toplam ~3.3 dk sabır
 
+# ZAMAN AŞIMI SABRI — ayrı ve DAHA KISA. Ölçüm (24 deneylik gerçek kampanya):
+# 24 slotun 4'ü TimeoutError, 3'ü boş yanıt ile ÇÖPE gitti = bütçenin %29'u.
+# Yalnızca 14 hipotez gerçekten backtest edilebildi. Zaman aşımını yeniden
+# denemek slotu kurtarır; ama her deneme DEFAULT_TIMEOUT kadar (125 sn) beklemek
+# demek olduğundan rate-limit kadar sabırlı olamayız — 2 ile sınırlı.
+TIMEOUT_RETRIES = 2
+
 # SERT (wall-clock) TIMEOUT — bkz. OpenAICompatibleClient._create.
 # httpx read-timeout'u, sunucu bağlantıyı canlı tutup hiç veri göndermediğinde
 # GÜVENİLİR tetiklenmiyor (gerçek koşuda görüldü: kampanya OpenRouter'a açık bir
@@ -142,19 +149,32 @@ class OpenAICompatibleClient:
         # RATE-LIMIT SABRI: bedava modellerde upstream 429 sık; sabırsız davranmak
         # deney slotunu ÇÖPE ATIYOR (ölçüldü: 24 deneyin 11'i). Bekleyip yeniden
         # denemek slotu kurtarır. Diğer hatalar anında yukarı fırlar (yutulmaz).
-        for attempt in range(RATE_LIMIT_RETRIES + 1):
+        # Zaman aşımının AYRI (daha kısa) sayacı var: her denemesi ~125 sn'ye
+        # mal olur, rate-limit kadar sabırlı olunamaz.
+        gecici = 0        # rate-limit + boş yanıt denemeleri
+        zaman_asimi = 0   # timeout denemeleri
+        while True:
             try:
                 resp = _call()
                 break
             except (RateLimitError, LLMEmptyResponseError) as e:
-                if attempt >= RATE_LIMIT_RETRIES:
+                if gecici >= RATE_LIMIT_RETRIES:
                     raise
-                wait = RATE_LIMIT_BACKOFF * (attempt + 1)
+                gecici += 1
+                wait = RATE_LIMIT_BACKOFF * gecici
                 sebep = ("rate-limit (429)" if isinstance(e, RateLimitError)
                          else "bos yanit (upstream hatasi)")
                 print(f"    [llm] {sebep}; {wait:.0f} sn bekleyip tekrar "
-                      f"deneniyor ({attempt + 1}/{RATE_LIMIT_RETRIES})...", flush=True)
+                      f"deneniyor ({gecici}/{RATE_LIMIT_RETRIES})...", flush=True)
                 time.sleep(wait)
+            except TimeoutError:
+                # Slot kurtarma: yanıt vermeyen çağrı yüzünden koca bir deney
+                # slotunu kaybetmek, birkaç dakika beklemekten pahalıdır.
+                if zaman_asimi >= TIMEOUT_RETRIES:
+                    raise
+                zaman_asimi += 1
+                print(f"    [llm] zaman asimi; tekrar deneniyor "
+                      f"({zaman_asimi}/{TIMEOUT_RETRIES})...", flush=True)
         msg = getattr(resp.choices[0], "message", None)   # boşluk _call'da elendi
         usage = resp.usage
         return LLMResponse(
