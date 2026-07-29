@@ -427,7 +427,8 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
 
     out = generate_dashboard(DB_PATH, HOLDOUT_DB, os.path.join(HERE, "dashboard.html"),
                              campaign_name=campaign["name"],
-                             bars_per_year=holdout_data.bars_per_year)
+                             bars_per_year=holdout_data.bars_per_year,
+                             min_acceptance_sharpe=cfg.min_acceptance_sharpe)
     print(f"\nDashboard: {out}")
 
 
@@ -614,7 +615,8 @@ def main() -> None:
     # Research dashboard (tek dosya, offline) — hocaya göstermek için
     out = generate_dashboard(DB_PATH, HOLDOUT_DB, os.path.join(HERE, "dashboard.html"),
                              campaign_name=campaign["name"],
-                             bars_per_year=data.bars_per_year)
+                             bars_per_year=data.bars_per_year,
+                             min_acceptance_sharpe=cfg.min_acceptance_sharpe)
     print(f"\nDashboard: {out}")
 
 

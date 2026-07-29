@@ -236,12 +236,43 @@ def _trader_ozeti(memory_db: str, holdout_db: str, bars_per_year: int) -> str:
                        'gerçek bir piyasa kuralı değil, geçmişe uydurulmuş '
                        'desenlerdi — sistemin işi tam olarak bunu yakalamaktı.</p>')
     else:
-        renk = "good"
-        baslik = f"KİLİTLİ DÖNEMİ {_passed}/{cand} GEÇTİ"
-        holdout_not = (f'<p class="desc"><b>ASIL SONUÇ BU:</b> {cand} adaydan '
-                       f'<b>{_passed}</b> tanesi hiç görmediği kilitli dönemde de '
-                       'ayakta kaldı. Ciddiye alınacak bir işaret — ama tek bir '
-                       'dönemdir; canlı takip (ileri-test) hâlâ gerekir.</p>')
+        # ÜÇ-DÖNEM HÜKMÜ ESASTIR. Eskiden burada koşulsuz "KİLİTLİ DÖNEMİ n/m
+        # GEÇTİ" (yeşil) yazılıyordu. Ölçüldü ki bu YANILTICI: holdout'u geçen
+        # 3 adayın 3'ü de taze veride çöktü. Başlık artık ikinci, bağımsız OOS
+        # dönemini de hesaba katar — yoksa panel "geçti", alttaki üç-dönem
+        # tablosu "rejim-bağımlı" der ve okuyan hangisine inanacağını bilemez.
+        from evaluation.three_period import final_verdict
+        uc = _uc_donem_satirlari(memory_db, holdout_db)
+        hukumler = [final_verdict(r, h, f, 0.5) for _h, _t, r, h, f in uc]
+        dogrulanan = sum(1 for v in hukumler if v.passed)
+        olculdu = [v for v in hukumler if v.verdict != "EKSİK"]
+        if not olculdu:
+            renk = "warn"
+            baslik = f"KİLİTLİ DÖNEMİ {_passed}/{cand} GEÇTİ — İLERİ-TEST EKSİK"
+            holdout_not = (f'<p class="desc"><b>{_passed}/{cand}</b> aday kilitli '
+                           'dönemi geçti. AMA hüküm <b>EKSİK</b>: ikinci, bağımsız '
+                           'dönem (ileri-test) henüz ölçülmedi. Tek bir kilitli '
+                           'dönem yeterli kanıt değildir — ölçülmemiş dönemi '
+                           '“geçti” saymak tam da bu kontrolün önlemek için var '
+                           'olduğu hatadır. <code>python main.py --holdout</code>'
+                           '</p>')
+        elif dogrulanan:
+            renk = "good"
+            baslik = f"İKİ OOS DÖNEMİNİ DE {dogrulanan}/{len(uc)} GEÇTİ"
+            holdout_not = (f'<p class="desc"><b>ASIL SONUÇ BU:</b> {dogrulanan} aday '
+                           'İKİ bağımsız örneklem-dışı dönemde de ayakta kaldı. '
+                           'Ciddiye alınacak bir işaret — ama <b>“alpha bulundu” '
+                           'değil</b>: çok sayıda deneme içinden çıktı. Doğru okuma: '
+                           '<b>henüz ölmedi</b>.</p>')
+        else:
+            renk = "bad"
+            baslik = "REJİM-BAĞIMLI — TAZE VERİDE ÇÖKTÜ"
+            holdout_not = (f'<p class="desc"><b>ASIL SONUÇ BU:</b> {_passed} aday '
+                           'kilitli dönemi geçti AMA hiçbiri sistemin hiç görmediği '
+                           'taze veride ayakta kalamadı. Kilitli dönem TEK bir rejim '
+                           'çekilişidir; onu geçmek genelleme kanıtı değildir. '
+                           'Yalnızca holdout’a bakılsaydı “alpha bulduk” denecekti — '
+                           'sistem bunu yakaladı.</p>')
 
     return (
         f'<div class="card">'
@@ -386,6 +417,105 @@ def _pareto(memory_db: str) -> str:
             '<div class="desc" style="margin-top:8px">Skor = Sharpe_alt-sınır '
             '− 0.5·DD − 0.002·turnover (bütçe tahsisi için yardımcı sinyal). '
             'Pareto-optimal = hiçbir stratejiye tüm boyutlarda yenik düşmeyen.</div>')
+
+
+def _uc_donem_satirlari(memory_db: str, holdout_db: str) -> "list[tuple]":
+    """(hid, baslik, arastirma, holdout, ileri-test) — AKTIF kayitlardan.
+
+    Uc kaynak birlestirilir: arastirma Sharpe'i hafizadan, holdout aktif
+    audit kaydindan, ileri-test ise sicilin EN SON olcumunden. Gecersiz
+    kilinmis holdout kayitlari ve eski ileri-test olcumleri disarida kalir.
+    """
+    if not os.path.exists(holdout_db):
+        return []
+    hc = sqlite3.connect(holdout_db)
+    try:
+        kol = {r[1] for r in hc.execute("PRAGMA table_info(holdout_access)")}
+        hash_var = "hypothesis_hash" in kol
+        sec = "hypothesis_id, sharpe" + (", hypothesis_hash" if hash_var else "")
+        sql = f"SELECT {sec} FROM holdout_access"
+        if "status" in kol:
+            sql += " WHERE status='active'"
+        satir = _q(hc, sql)
+        holdout = {r[0]: r[1] for r in satir}
+        hashler = {r[0]: r[2] for r in satir} if hash_var else {}
+        ileri = {}
+        try:
+            ileri = dict(_q(hc, "SELECT hypothesis_id, sharpe FROM forward_test "
+                                "WHERE id IN (SELECT MAX(id) FROM forward_test "
+                                "GROUP BY hypothesis_id)"))
+        except sqlite3.Error:
+            pass          # eski audit dosyasi: forward_test tablosu yok
+    finally:
+        hc.close()
+    if not holdout:
+        return []
+    mc = sqlite3.connect(memory_db)
+    try:
+        arastirma = {h: (t, s, hj) for h, t, s, hj in _q(
+            mc, "SELECT hypothesis_id, title, sharpe, hypothesis_json FROM "
+                "experiment WHERE decision='accept' AND sharpe IS NOT NULL")}
+    finally:
+        mc.close()
+    out = []
+    for hid, h_sh in holdout.items():
+        t, r_sh, hj = arastirma.get(hid, ("(hafızada yok)", None, None))
+        # KİMLİK DOĞRULAMASI: hypothesis_id kampanyalar arası TEKİL DEĞİL
+        # (--fresh sayacı sıfırlar), audit ise kampanyalar arası yaşar.
+        # Gerçek örnek: v2'nin hyp_0033'ü üç dönemi geçti, v4'ün hyp_0033'ü
+        # bambaşka bir hipotez. Parmak izi tutmuyorsa araştırma Sharpe'ını
+        # JOIN ETME — yanlış hipotezi raporlamak, hiç raporlamamaktan kötüdür.
+        beklenen = hashler.get(hid)
+        if beklenen and hj:
+            try:
+                from contracts.hypothesis_spec import HypothesisSpec
+                from holdout.service import hypothesis_fingerprint
+                if hypothesis_fingerprint(
+                        HypothesisSpec.model_validate_json(hj)) != beklenen:
+                    t, r_sh = "(BAŞKA kampanyanın aynı kimlikli hipotezi)", None
+            except Exception:  # noqa: BLE001
+                pass
+        out.append((hid, t, r_sh, h_sh, ileri.get(hid)))
+    out.sort(key=lambda r: (r[4] is None, -(r[4] or 0)))
+    return out
+
+
+def _uc_donem(memory_db: str, holdout_db: str, min_sharpe: float) -> str:
+    """UC-DONEM HUKMU bolumu — kilitli donem tek basina yetmez."""
+    from evaluation.three_period import final_verdict
+
+    satirlar = _uc_donem_satirlari(memory_db, holdout_db)
+    if not satirlar:
+        return ('<div class="card desc">Kilitli dönem sınavı yapılmadı — '
+                'üç-dönem hükmü için önce <code>python main.py --holdout</code>.</div>')
+    _PILL = {"DOĞRULANDI": "good", "REJİM-BAĞIMLI": "warn",
+             "ÇÖKTÜ": "bad", "EKSİK": "muted"}
+    govde = ""
+    dogrulanan = 0
+    for hid, title, r_sh, h_sh, f_sh in satirlar:
+        v = final_verdict(r_sh, h_sh, f_sh, min_sharpe)
+        dogrulanan += int(v.passed)
+        govde += (
+            f"<tr><td>{_esc(hid)}</td><td>{_esc((title or '')[:44])}</td>"
+            f'<td class="num">{("%+.2f" % r_sh) if r_sh is not None else "–"}</td>'
+            f'<td class="num">{("%+.2f" % h_sh) if h_sh is not None else "–"}</td>'
+            f'<td class="num">{("%+.2f" % f_sh) if f_sh is not None else "–"}</td>'
+            f'<td><span class="pill {_PILL.get(v.verdict, "muted")}">'
+            f'{_esc(v.verdict)}</span></td></tr>')
+    if dogrulanan:
+        son = (f'<p class="desc"><b>{dogrulanan}/{len(satirlar)}</b> aday İKİ '
+               'bağımsız örneklem-dışı dönemde de ayakta kaldı. Ciddiye alınacak '
+               'bir işaret — ama <b>“alpha bulundu” değil</b>: çok sayıda deneme '
+               'içinden çıktı, çoklu-test düzeltmesi ayrıca kontrol edilmeli. '
+               'Doğru okuma: bu aday <b>henüz ölmedi</b>.</p>')
+    else:
+        son = ('<p class="desc"><b>Hiçbir aday iki OOS döneminde birden ayakta '
+               'kalamadı.</b> Kilitli dönemi geçmiş olmaları rejim şansıydı — '
+               'tek bir kilitli dönem yeterli kanıt değildir. Sistem bunu '
+               'yakaladı; “holdout geçti” diye erken sevinilmedi.</p>')
+    return ('<div class="card"><table><tr><th>Kimlik</th><th>Strateji</th>'
+            '<th>Araştırma</th><th>Holdout</th><th>İleri-test</th><th>Hüküm</th>'
+            '</tr>' + govde + "</table>" + son + "</div>")
 
 
 def _holdout(holdout_db: str, memory_db: "str | None" = None) -> str:
@@ -867,7 +997,8 @@ def _families(conn) -> str:
 
 
 def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
-                       campaign_name: str = "", bars_per_year: int = 252) -> str:
+                       campaign_name: str = "", bars_per_year: int = 252,
+                       min_acceptance_sharpe: float = 0.5) -> str:
     """bars_per_year: Sharpe yıllıklaştırma ölçeği (hisse 252 / kripto 365 / 8h 1095).
     Verilmezse çoklu-test tablosu 252 varsayar ve leaderboard ile ÇELİŞİR."""
     conn = sqlite3.connect(memory_db)
@@ -881,6 +1012,13 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "Bu ilk bölüm tek soruyu cevaplar: sonuç ne, paraya ne oldu? "
                  "Alım-satım bilen ama makine öğrenmesi bilmeyen biri için yazıldı.",
                  _trader_ozeti(memory_db, holdout_db, bars_per_year)),
+        _section("Üç-Dönem Hükmü — kilitli holdout TEK BAŞINA yetmez",
+                 "Ölçüldü: kilitli dönemi geçen 3 adayın 3'ü de, sistemin hiç "
+                 "görmediği taze veride (2025→bugün) çöktü. Holdout tek bir REJİM "
+                 "çekilişidir. Bu yüzden hüküm İKİ bağımsız örneklem-dışı dönemin "
+                 "birlikte değerlendirilmesinden çıkar; ölçülmemiş dönem 'geçti' "
+                 "sayılmaz (EKSİK).",
+                 _uc_donem(memory_db, holdout_db, min_acceptance_sharpe)),
         _section("Kampanya Özeti",
                  "Bu turda üretilen hipotezlerin karar dağılımı. 'Farklı yapı' = "
                  "pencereden bağımsız kaç farklı strateji YAPISI üretildi (yalnız "

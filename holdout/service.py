@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS holdout_access (
     -- uygulanır (aşağı bak). Böylece hatalı bir değerlendiriciyle üretilmiş
     -- sonuçlar SİLİNMEDEN geçersiz kılınıp yeniden koşulabilir.
     status        TEXT DEFAULT 'active',    -- active | invalidated
+    -- HIPOTEZ PARMAK IZI. hypothesis_id kampanyalar arasi TEKIL DEGILDIR:
+    -- --fresh sayaci sifirlar, yeni kampanya yine hyp_0001'den baslar. Audit
+    -- ise kampanyalar arasi YASAR (kilitli donem proje capinda sonlu bir
+    -- kaynak). Sonuc: ayni kimlik iki FARKLI hipotezi gosterebilir (gercek
+    -- ornek: v2'nin hyp_0033'u uc donemi gecti, v4'un hyp_0033'u reddedildi).
+    -- Icerik hash'i, kimlige guvenerek YANLIS hipotezi raporlamayi onler.
+    hypothesis_hash TEXT,
     evaluator_version TEXT,
     invalidated_at    TEXT,
     invalidation_reason TEXT
@@ -73,10 +80,27 @@ CREATE INDEX IF NOT EXISTS ix_forward_hyp
 # Eski şemadan (hypothesis_id UNIQUE, ek sütunlar yok) yeni şemaya taşıma.
 _MIGRATE_COLUMNS = {
     "status": "TEXT DEFAULT 'active'",
+    "hypothesis_hash": "TEXT",
     "evaluator_version": "TEXT",
     "invalidated_at": "TEXT",
     "invalidation_reason": "TEXT",
 }
+
+
+def hypothesis_fingerprint(hyp: HypothesisSpec) -> str:
+    """Hipotezin İÇERİK parmak izi (kimlikten BAĞIMSIZ).
+
+    `hypothesis_id` kampanyalar arası tekil değildir (`--fresh` sayacı
+    sıfırlar). Holdout audit'i ise kampanyalar arası yaşar. Bu yüzden bir
+    kaydın HANGİ hipoteze ait olduğunu kimlik değil, içerik belirler.
+    Sinyal/feature/portföy/execution alınır; başlık ve kimlik ALINMAZ
+    (aynı strateji farklı adla gelirse yine aynı parmak izi çıksın).
+    """
+    import hashlib
+
+    govde = hyp.model_dump_json(
+        include={"signal", "features", "portfolio", "execution", "model"})
+    return hashlib.sha256(govde.encode()).hexdigest()[:16]
 
 
 class HoldoutError(Exception):
@@ -189,14 +213,17 @@ class HoldoutService:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     hypothesis_id TEXT NOT NULL, sharpe REAL, passed INTEGER,
                     accessed_at TEXT, status TEXT DEFAULT 'active',
+                    hypothesis_hash TEXT,
                     evaluator_version TEXT, invalidated_at TEXT,
                     invalidation_reason TEXT);
                 INSERT INTO holdout_access
                     (id, hypothesis_id, sharpe, passed, accessed_at, status,
-                     evaluator_version, invalidated_at, invalidation_reason)
+                     hypothesis_hash, evaluator_version, invalidated_at,
+                     invalidation_reason)
                 SELECT id, hypothesis_id, sharpe, passed, accessed_at,
-                       COALESCE(status,'active'), evaluator_version,
-                       invalidated_at, invalidation_reason FROM _holdout_old;
+                       COALESCE(status,'active'), hypothesis_hash,
+                       evaluator_version, invalidated_at, invalidation_reason
+                FROM _holdout_old;
                 DROP TABLE _holdout_old;
                 CREATE INDEX IF NOT EXISTS ix_holdout_active
                     ON holdout_access (hypothesis_id, status);
@@ -268,9 +295,11 @@ class HoldoutService:
 
         self._audit.execute(
             "INSERT INTO holdout_access (hypothesis_id, sharpe, passed, "
-            "accessed_at, status, evaluator_version) VALUES (?,?,?,?,'active',?)",
+            "accessed_at, status, hypothesis_hash, evaluator_version) "
+            "VALUES (?,?,?,?,'active',?,?)",
             (hyp.hypothesis_id, sharpe, int(passed),
-             datetime.now(timezone.utc).isoformat(), EVALUATOR_VERSION))
+             datetime.now(timezone.utc).isoformat(),
+             hypothesis_fingerprint(hyp), EVALUATOR_VERSION))
         self._audit.commit()
         # NOT: holdout tarihleri/serisi ASLA döndürülmez; sadece özet.
         return HoldoutResult(hyp.hypothesis_id, sharpe, passed, coverage)

@@ -93,6 +93,75 @@ def test_tablo_tum_adaylari_ve_hukmu_basar():
     print("  [ok] tablo tüm adayları hükmüyle basıyor")
 
 
+# ===========================================================================
+# KIMLIK CAKISMASI — hypothesis_id kampanyalar arasi TEKIL DEGIL
+# ===========================================================================
+# --fresh sayaci sifirlar (yeni kampanya yine hyp_0001'den baslar) ama holdout
+# audit'i kampanyalar arasi YASAR (kilitli donem proje capinda sonlu kaynak).
+# Gercek ornek: v2'nin hyp_0033'u uc donemi gecti; v4'un hyp_0033'u bambaska
+# bir hipotez ve reddedildi. Kimlige guvenerek join yapmak YANLIS hipotezi
+# raporlar. Cozum: icerik parmak izi.
+
+
+def _spec(hid: str, window: int, title: str = "t"):
+    from contracts.hypothesis_spec import HypothesisSpec
+    return HypothesisSpec.model_validate({
+        "hypothesis_id": hid, "title": title, "claim": "c", "family": "momentum",
+        "economic_mechanism": {"type": "t", "description": "d"},
+        "universe": {"source": "sp500_point_in_time"}, "features": [],
+        "signal": {"op": "cross_sectional_rank", "inputs": [
+            {"op": "return", "window": window,
+             "inputs": [{"op": "field", "field": "close"}]}]},
+        "portfolio": {"type": "cross_sectional_long_short"},
+        "execution": {"signal_time": "close_t", "trade_time": "open_t_plus_1",
+                      "holding_period_days": 5},
+        "falsification": {}})
+
+
+def test_ayni_kimlik_farkli_strateji_ayirt_edilir():
+    from holdout.service import hypothesis_fingerprint
+    v2 = _spec("hyp_0033", 60)
+    v4 = _spec("hyp_0033", 20)          # AYNI kimlik, FARKLI strateji
+    assert hypothesis_fingerprint(v2) != hypothesis_fingerprint(v4), (
+        "iki farkli strateji ayni parmak izini uretti — kimlik cakismasi "
+        "tespit edilemez, yanlis hipotez raporlanabilir")
+    print("  [ok] ayni kimlikli FARKLI stratejiler ayirt ediliyor")
+
+
+def test_ayni_strateji_farkli_kimlik_ve_baslikta_ayni_iz():
+    """Parmak izi ICERIGE bakar: yeniden adlandirma onu degistirmemeli."""
+    from holdout.service import hypothesis_fingerprint
+    a = _spec("hyp_0001", 60, "orijinal baslik")
+    b = _spec("bambaska_kimlik", 60, "tamamen farkli baslik")
+    assert hypothesis_fingerprint(a) == hypothesis_fingerprint(b), (
+        "ayni strateji farkli kimlik/baslikla farkli iz uretti")
+    print("  [ok] ayni strateji, farkli kimlik/baslik -> ayni parmak izi")
+
+
+def test_parmak_izi_holdout_kaydina_yaziliyor():
+    import os
+    import tempfile
+
+    from data import gen_cross_sectional_momentum, split_by_fraction
+    from holdout import HoldoutService
+    from holdout.service import hypothesis_fingerprint
+
+    fd, db = tempfile.mkstemp(suffix=".sqlite")
+    os.close(fd); os.remove(db)
+    _r, holdout = split_by_fraction(gen_cross_sectional_momentum(seed=1), 0.7)
+    svc = HoldoutService(holdout, audit_path=db, cost_bps=1.0)
+    hyp = _spec("hyp_0001", 20)
+    svc.evaluate(hyp)
+    kayit = svc.audit_log()[0]
+    svc.close()
+    import sqlite3
+    c = sqlite3.connect(db)
+    (iz,) = c.execute("SELECT hypothesis_hash FROM holdout_access").fetchone()
+    c.close()
+    assert iz == hypothesis_fingerprint(hyp),         f"audit'e yazilan parmak izi yanlis: {iz}"
+    print("  [ok] parmak izi holdout kaydina yaziliyor")
+
+
 def main() -> None:
     test_holdout_gecip_ileri_testte_cokene_GUVENILIR_DENMEZ()
     test_uc_donemde_de_ayakta_kalan_dogrulanir()
@@ -102,6 +171,9 @@ def main() -> None:
     test_arastirma_sharpe_hukmu_DEGISTIRMEZ()
     test_esik_kampanyadan_gelir()
     test_tablo_tum_adaylari_ve_hukmu_basar()
+    test_ayni_kimlik_farkli_strateji_ayirt_edilir()
+    test_ayni_strateji_farkli_kimlik_ve_baslikta_ayni_iz()
+    test_parmak_izi_holdout_kaydina_yaziliyor()
     print("OK — üç-dönem hükmü testleri geçti (tek holdout yeterli sayılmıyor).")
 
 
