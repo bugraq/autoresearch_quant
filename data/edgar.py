@@ -66,29 +66,81 @@ def _concept(cik: str, concept: str) -> "list[dict] | None":
     return u.get("USD") or u.get("shares") or None
 
 
-def _pit_series(records: "list[dict]", dates: pd.DatetimeIndex) -> pd.Series:
-    """Kayıtları POINT-IN-TIME günlük seriye çevir: her gün, O GÜNE KADAR DOSYALANMIŞ
-    en güncel değer. filed>date olan kayıt o günde BİLİNMEZ (look-ahead engeli)."""
-    # (filed_date, value) çiftleri; filed'e göre sırala, aynı filed'de sonuncuyu al
-    pts = sorted((pd.Timestamp(r["filed"]), float(r["val"])) for r in records)
-    if not pts:
+#: Yıllık sayılan dönem uzunluğu (gün). Mali yıllar 52/53 hafta olabildiği için
+#: tam 365 aranmaz.
+_ANNUAL_MIN, _ANNUAL_MAX = 300, 400
+
+
+def _pit_series(records: "list[dict]", dates: pd.DatetimeIndex,
+                annual_only: bool = False) -> pd.Series:
+    """Kayıtları POINT-IN-TIME günlük seriye çevir: her gün, O GÜNE KADAR
+    DOSYALANMIŞ EN GÜNCEL DÖNEMİN değeri.
+
+    İKİ HATA BURADA KAPATILDI (ölçüldü, bkz. aşağıdaki gerçek örnek):
+
+    1) AYNI DOSYALAMADA BİRDEN ÇOK DÖNEM. Bir 10-K, cari dönemi VE önceki
+       yılların karşılaştırmalarını AYNI `filed` tarihiyle raporlar. Eski kod
+       `sorted((filed, val))` + `keep="last"` yapıyordu; yani aynı tarihteki
+       kayıtlardan EN BÜYÜK DEĞERİ seçiyordu — en güncel dönemi değil.
+       Gerçek örnek (CIK 0000002488, filed 2011-02-18, 4 kayıt):
+           2007 -> 3.230.000.000   <- eski kod BUNU seçiyordu
+           2008 ->   127.000.000
+           2009 ->   648.000.000
+           2010 -> 1.013.000.000   <- doğrusu (en güncel dönem)
+       3.2 kat yanlış ve 3 yıl bayat. 175 dosyalamanın 64'ü çok kayıtlıydı.
+       Düzeltme: sıralama (filed, END) — değere göre DEĞİL.
+
+    2) DÖNEM UZUNLUĞU KARIŞIMI (annual_only). Akış kalemleri (net kâr) hem
+       3-aylık hem 12-aylık raporlanır (ölçüldü: 144 çeyrek / 42 yıllık /
+       26 yarım / 26 dokuz-aylık). Bunları aynı havuzda kullanmak, kesitsel
+       sıralamada bir şirketin ÇEYREK kârını başkasının YILLIK kârıyla
+       yarıştırır — elma-armut. annual_only=True yalnız ~yıllık dönemleri alır.
+       (Stok kalemleri — özsermaye, hisse sayısı — anlıktır; onlarda kapalı.)
+
+    filed > date olan kayıt o günde BİLİNMEZ: look-ahead yapısal olarak imkânsız.
+    """
+    rows = []
+    for r in records:
+        if annual_only:
+            start, end = r.get("start"), r.get("end")
+            if not start or not end:
+                continue                     # anlık kalem: yıllık filtresi anlamsız
+            gun = (pd.Timestamp(end) - pd.Timestamp(start)).days
+            if not (_ANNUAL_MIN <= gun <= _ANNUAL_MAX):
+                continue
+        try:
+            rows.append((pd.Timestamp(r["filed"]),
+                         pd.Timestamp(r.get("end") or r["filed"]),
+                         float(r["val"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not rows:
         return pd.Series(np.nan, index=dates)
-    filed = pd.DatetimeIndex([p[0] for p in pts])
-    vals = pd.Series([p[1] for p in pts], index=filed)
+
+    # (filed, END) — aynı dosyalamada EN GÜNCEL DÖNEM kazanır (değer DEĞİL).
+    rows.sort(key=lambda x: (x[0], x[1]))
+    filed = pd.DatetimeIndex([r[0] for r in rows])
+    vals = pd.Series([r[2] for r in rows], index=filed)
     vals = vals[~vals.index.duplicated(keep="last")]
     # her tarih için: <= tarih olan son dosyalamanın değeri (as-of)
     return vals.reindex(vals.index.union(dates)).ffill().reindex(dates)
 
 
 def pit_panel(tickers: "list[str]", dates: pd.DatetimeIndex, concept: str,
-              ciks: "dict[str,str] | None" = None) -> pd.DataFrame:
-    """Bir us-gaap kavramının POINT-IN-TIME günlük paneli (tarih × ticker)."""
+              ciks: "dict[str,str] | None" = None,
+              annual_only: bool = False) -> pd.DataFrame:
+    """Bir us-gaap kavramının POINT-IN-TIME günlük paneli (tarih × ticker).
+
+    annual_only: AKIŞ kalemlerinde (net kâr) zorunlu — çeyrek/yıllık karışımı
+    kesitsel sıralamayı elma-armut yapar (bkz. _pit_series).
+    """
     ciks = ciks or ticker_to_cik(tickers)
     out = {}
     for t in tickers:
         cik = ciks.get(t.upper())
         recs = _concept(cik, concept) if cik else None
-        out[t] = _pit_series(recs, dates) if recs else pd.Series(np.nan, index=dates)
+        out[t] = (_pit_series(recs, dates, annual_only) if recs
+                  else pd.Series(np.nan, index=dates))
     return pd.DataFrame(out, index=dates)
 
 
@@ -99,11 +151,12 @@ NET_INCOME = ["NetIncomeLoss", "ProfitLoss"]
 SHARES = ["CommonStockSharesOutstanding", "CommonStockSharesIssued"]
 
 
-def _first_available(tickers, dates, concepts, ciks) -> pd.DataFrame:
+def _first_available(tickers, dates, concepts, ciks,
+                     annual_only: bool = False) -> pd.DataFrame:
     """Kavram listesinden ilk dolu olanı kullan (ticker bazında birleştir)."""
     panel = pd.DataFrame(np.nan, index=dates, columns=tickers)
     for concept in concepts:
-        p = pit_panel(tickers, dates, concept, ciks)
+        p = pit_panel(tickers, dates, concept, ciks, annual_only)
         panel = panel.where(panel.notna(), p)   # boş olanları doldur
     return panel
 
@@ -114,12 +167,21 @@ def fundamentals(tickers: "list[str]", dates: pd.DatetimeIndex,
 
     book_to_market = defter özsermayesi / piyasa değeri (piyasa değeri = fiyat×hisse)
     roe            = net kâr / defter özsermayesi
-    Hepsi dosyalama-tarihi hizalı (look-ahead yok). Kavramı olmayan hisse NaN (işlem
-    görmez). ttm net kâr için çeyreklik değerler 4-çeyrek toplanır (yaklaşık).
+    Hepsi dosyalama-tarihi hizalı (look-ahead yok). Kavramı olmayan hisse NaN
+    (işlem görmez).
+
+    NET KÂR: TTM toplama YAPILMAZ; bunun yerine yalnızca ~YILLIK dönemler
+    kullanılır (annual_only). Eski docstring "4-çeyrek toplanır" diyordu ama
+    kodda öyle bir toplama YOKTU — çeyreklik ve yıllık kayıtlar aynı havuzda
+    yarışıyordu. Yıllık filtre daha basit ve kesitsel olarak tutarlıdır
+    (Fama-French value/quality de yıllık muhasebe verisiyle çalışır).
     """
     ciks = ticker_to_cik(tickers)
     book = _first_available(tickers, dates, BOOK_EQUITY, ciks)
-    ni = _first_available(tickers, dates, NET_INCOME, ciks)
+    # NET KÂR bir AKIŞ kalemidir: yalnız ~yıllık dönemler alınır. Aksi hâlde
+    # bir şirketin ÇEYREK kârı başkasının YILLIK kârıyla yarışır (elma-armut)
+    # ve kesitsel ROE sıralaması anlamsızlaşır.
+    ni = _first_available(tickers, dates, NET_INCOME, ciks, annual_only=True)
     shares = _first_available(tickers, dates, SHARES, ciks)
 
     mktcap = price.reindex_like(book) * shares
