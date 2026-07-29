@@ -24,6 +24,7 @@ from contracts.hypothesis_spec import (
     EconomicMechanism, Execution, Falsification, HypothesisFamily,
     HypothesisSpec, Portfolio, Universe,
 )
+from baselines._common import allowed_holdings
 from contracts.research_context import ResearchContext
 
 _SHARPE_RE = re.compile(r"Sharpe\s*(-?\d+(?:\.\d+)?)")
@@ -79,7 +80,8 @@ class BayesianOptProvider:
             "w": horizons,
             "w2": horizons,
             "quantile": [0.1, 0.2, 0.3],
-            "holding": [1, 5, 10],
+            # kampanya ufuk kisitina UY (bkz. _common.py)
+            "holding": allowed_holdings(ctx.allowed_horizons),
             "rebalance": ctx.allowed_rebalance or ["daily"],
             "ptype": ctx.allowed_portfolio_types or ["cross_sectional_long_short"],
         }

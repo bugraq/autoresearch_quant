@@ -435,7 +435,8 @@ def run_campaign(provider: HypothesisProvider, data: MarketData,
             _vprint(verbose, "  3. Sizinti denetimi (gelecege bakiyor mu?)...")
             static = validate(graph, hyp, allowed_fields=cfg.allowed_fields or None,
                               allowed_rebalance=cfg.allowed_rebalance or None,
-                              allowed_portfolio_types=cfg.portfolio_types or None)
+                              allowed_portfolio_types=cfg.portfolio_types or None,
+                              allowed_horizons=cfg.allowed_horizons or None)
             if static.decision != DecisionType.accept:
                 rec(hyp, static, STAGE_STATIC_REJECTED)
                 reason = static.issues[0].type if static.issues else "?"

@@ -81,12 +81,72 @@ def test_run_campaign_hizalamayi_uyguluyor():
     print("  [ok] run_campaign hizalamayı gerçekten uyguluyor")
 
 
+# ===========================================================================
+# BASELINE'LAR DA KAMPANYA KISITINA UYAR (adil kiyas)
+# ===========================================================================
+# Static validator ufuk kisitini uygulamaya baslayinca olculdu: baseline'lar
+# holding_period_days'i SABIT [1,5,10]'dan seciyordu; kripto kampanyasinin
+# izinli ufuklari [5,10,20,60,90,120] oldugu icin holding=1 kisiti ihlal
+# ediyordu. Sonuc: random-search uretimlerinin %47'si, GP'nin %27'si backtest'e
+# BILE GIRMEDEN disallowed_horizon ile eleniyordu. Yani LLM'i kiyasladigimiz
+# alt-cita (Deney A / MVP kriter 9) sakat kaliyordu — "ustunluk" kismen
+# rakibin diskalifiye edilmesinden gelirdi.
+
+
+def test_baseline_holding_kampanya_ufkuna_uyar():
+    from baselines._common import allowed_holdings
+    assert allowed_holdings(None) == [1, 5, 10], "kisitsiz varsayilan degisti"
+    # kesisim korunur (kisa tutma tercihi)
+    assert allowed_holdings([5, 10, 20, 60, 90, 120]) == [5, 10]
+    # kesisim bossa en kisa uc ufuk (uretim imkansiz kalmasin)
+    assert allowed_holdings([30, 60, 90, 120]) == [30, 60, 90]
+    print("  [ok] allowed_holdings kampanya ufuklarina uyuyor")
+
+
+def test_baseline_uretimleri_statik_kapidan_gecer():
+    """ASIL TEST: uc baseline de kampanya kisitlari altinda uretim yapabilmeli."""
+    from collections import Counter
+
+    from baselines import (
+        BayesianOptProvider, GPHypothesisProvider, RandomHypothesisProvider,
+    )
+    from contracts.research_context import GenerationMode, ResearchContext
+    from dsl import compile_hypothesis, validate
+
+    ufuklar = [5, 10, 20, 60, 90, 120]      # kripto kampanyasi (1 YOK)
+    ctx = ResearchContext(
+        campaign_goal="t", universe_description="u",
+        allowed_fields=["open", "high", "low", "close", "volume", "dollar_volume"],
+        allowed_operators=["return", "rolling_mean", "zscore", "volatility",
+                           "cross_sectional_rank", "multiply", "negate"],
+        allowed_horizons=ufuklar, allowed_rebalance=["daily", "weekly"],
+        allowed_portfolio_types=["cross_sectional_long_short"],
+        generation_mode=GenerationMode.new, experiments_remaining=40)
+
+    for ad, saglayici in (("random", RandomHypothesisProvider(seed=1)),
+                          ("gp", GPHypothesisProvider(seed=1)),
+                          ("bayesopt", BayesianOptProvider(seed=1))):
+        red = Counter()
+        n = 25
+        for _ in range(n):
+            h = saglayici.next(ctx)
+            dec = validate(compile_hypothesis(h), h, allowed_horizons=ufuklar)
+            if dec.decision.value != "accept":
+                red[dec.issues[0].type if dec.issues else "?"] += 1
+        assert not red, (
+            f"{ad} baseline'inin {sum(red.values())}/{n} uretimi kampanya "
+            f"kisitina takildi ({dict(red)}) — alt-cita sakat, kiyas adil degil")
+        print(f"  [ok] {ad}: {n} uretimin hepsi kampanya kisitlarindan gecti")
+
+
 def main() -> None:
     test_veride_olmayan_alan_dusurulur()
     test_hepsi_uyumluysa_hicbir_sey_degismez()
     test_hicbiri_yoksa_sessizce_devam_etmez()
     test_run_campaign_hizalamayi_uyguluyor()
-    print("OK — alan hizalaması testleri geçti (olmayan alan LLM'e sunulmuyor).")
+    test_baseline_holding_kampanya_ufkuna_uyar()
+    test_baseline_uretimleri_statik_kapidan_gecer()
+    print("OK — alan/ufuk hizalamasi testleri gecti (kisitlar GERCEKTEN uygulaniyor).")
 
 
 if __name__ == "__main__":

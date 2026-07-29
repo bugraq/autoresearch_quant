@@ -21,6 +21,7 @@ from contracts.hypothesis_spec import (
     EconomicMechanism, Execution, Falsification, HypothesisFamily,
     HypothesisSpec, Portfolio, Universe,
 )
+from baselines._common import allowed_holdings
 from contracts.research_context import ResearchContext
 
 # Rastgele ağacın kullanabileceği zaman-serisi operatörleri (window'lu).
@@ -101,7 +102,10 @@ class RandomHypothesisProvider:
 
         fam = _family_for(ops_used, fields_used, combined)
         rebalance = rng.choice(context.allowed_rebalance or ["daily"])
-        holding = rng.choice([1, 5, 10])
+        # Kampanya ufuk kisitina UY (bkz. baselines/_common.py): sabit [1,5,10]
+        # kripto kampanyasinda holding=1 uretip uretimlerin %47'sini
+        # disallowed_horizon ile eletiyordu -> alt-cita sakat kaliyordu.
+        holding = rng.choice(allowed_holdings(context.allowed_horizons))
         ptype = rng.choice(context.allowed_portfolio_types
                            or ["cross_sectional_long_short"])
         q = rng.choice([0.1, 0.2, 0.3])

@@ -24,6 +24,7 @@ from contracts.hypothesis_spec import (
     EconomicMechanism, Execution, Falsification, HypothesisFamily,
     HypothesisSpec, Portfolio, Universe,
 )
+from baselines._common import allowed_holdings
 from contracts.research_context import ResearchContext
 from baselines.random_search import (
     _COMBINERS, _DEFAULT_FIELDS, _DEFAULT_HORIZONS, _TS_OPS, _family_for,
@@ -189,6 +190,8 @@ class GPHypothesisProvider:
             features=[], signal=signal,
             portfolio=Portfolio(type=ptype, long_quantile=q, short_quantile=q),
             execution=Execution(signal_time="close_t", trade_time="open_t_plus_1",
-                                holding_period_days=rng.choice([1, 5, 10]),
+                                # kampanya ufuk kisitina UY (bkz. _common.py)
+                                holding_period_days=rng.choice(
+                                    allowed_holdings(context.allowed_horizons)),
                                 rebalance=rng.choice(context.allowed_rebalance or ["daily"])),
             falsification=Falsification(minimum_oos_sharpe=0.5))

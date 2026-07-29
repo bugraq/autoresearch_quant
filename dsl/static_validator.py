@@ -59,7 +59,8 @@ def _find_degenerate_conditionals(nodes: dict[str, GraphNode]) -> list[str]:
 def validate(graph: StrategyGraph, hyp: HypothesisSpec,
              allowed_fields: "set[str] | list[str] | None" = None,
              allowed_rebalance: "list[str] | None" = None,
-             allowed_portfolio_types: "list[str] | None" = None) -> Decision:
+             allowed_portfolio_types: "list[str] | None" = None,
+             allowed_horizons: "list[int] | None" = None) -> Decision:
     """StrategyGraph + execution bağlamı -> Decision (accept/revise/reject).
 
     allowed_* verilirse (Campaign Manager kısıtı), sadece o değerlere izin
@@ -116,6 +117,35 @@ def validate(graph: StrategyGraph, hyp: HypothesisSpec,
             description=f"'{hyp.portfolio.type}' bu kampanyada izinli değil "
                         f"(izinli: {sorted(allowed_portfolio_types)})."))
         reject_level = True
+
+    # --- 0a2) İzin verilen PENCERE/UFUK kontrolü (Campaign Manager) ---
+    # Kapatılan açık: campaign.yaml `allowed_horizons` beyan ediyor ve prompt
+    # LLM'e "Pencere/ufuk (window) SADECE şunlardan" diyordu — ama HİÇBİR YERDE
+    # UYGULANMIYORDU. allowed_fields/rebalance/portfolio_types denetleniyor,
+    # horizons denetlenmiyordu; yani "şema = çalıştırılan şey" ilkesinde delik.
+    # Ayrıca iç tutarsızlık: optimizer (parameter_search) yalnızca izinli
+    # ufukları arıyor, LLM'in ürettiği ilk hipotez ise serbestti.
+    # NOT: robustness pencereleri BİLEREK ±%20 oynatır (16, 25 gibi liste-dışı
+    # değerler üretir) ve validate ÇAĞIRMAZ — orası kasıtlı, dokunulmadı.
+    if allowed_horizons:
+        izinli_ufuk = set(int(h) for h in allowed_horizons)
+        for node in graph.nodes:
+            w = node.params.get("window")
+            if w is not None and int(w) not in izinli_ufuk:
+                issues.append(Issue(
+                    type="disallowed_horizon",
+                    description=(f"{node.op}: pencere {w} bu kampanyada izinli değil "
+                                 f"(izinli: {sorted(izinli_ufuk)})."),
+                    required_action="İzin verilen ufuklardan birini kullan."))
+                reject_level = True
+        hold = hyp.execution.holding_period_days
+        if hold is not None and int(hold) not in izinli_ufuk:
+            issues.append(Issue(
+                type="disallowed_horizon",
+                description=(f"execution.holding_period_days={hold} bu kampanyada "
+                             f"izinli değil (izinli: {sorted(izinli_ufuk)})."),
+                required_action="İzin verilen ufuklardan birini kullan."))
+            reject_level = True
 
     # --- 0) İzin verilen veri alanı kontrolü (Campaign Manager) ---
     if allowed_fields:

@@ -221,6 +221,57 @@ def test_dsl_formul_modunda_kullanilmayan_feature_sorun_degil():
     print("  [ok] dsl_formula: kullanilmayan feature yanlis alarm uretmiyor")
 
 
+# ---------------------------------------------------------------------------
+# KAMPANYA UFUK KISITI (allowed_horizons) — beyan edilen GERCEKTEN uygulanmali
+# ---------------------------------------------------------------------------
+# Acik neydi: campaign.yaml `allowed_horizons` beyan ediyor ve prompt LLM'e
+# "Pencere/ufuk (window) SADECE sunlardan" diyordu; ama validator yalnizca
+# allowed_fields/rebalance/portfolio_types'i denetliyordu. Yani kisit vardi,
+# uygulanmiyordu — "sema = calistirilan sey" ilkesinde delik. Ayrica ic
+# tutarsizlik: optimizer yalniz izinli ufuklari ariyor, LLM serbestti.
+
+_UFUKLAR = [5, 10, 20, 60]
+
+
+def _ufuklu(window: int, holding: int = 10) -> HypothesisSpec:
+    h = _hyp(_cs_rank_of(Expression(op="return", window=window,
+                                    inputs=[Expression(op="field", field="close")])))
+    h.execution.holding_period_days = holding
+    return h
+
+
+def test_izinli_ufuk_kabul_edilir():
+    h = _ufuklu(20)
+    dec = validate(compile_hypothesis(h), h, allowed_horizons=_UFUKLAR)
+    assert dec.decision == DecisionType.accept, [i.type for i in dec.issues]
+    print("  [ok] izinli ufuk (20) kabul edildi")
+
+
+def test_izinsiz_pencere_reddedilir():
+    for w in (7, 137):
+        h = _ufuklu(w)
+        dec = validate(compile_hypothesis(h), h, allowed_horizons=_UFUKLAR)
+        assert dec.decision == DecisionType.reject,             f"pencere {w} izinli listede yok ama KABUL edildi (kisit uygulanmiyor)"
+        assert any(i.type == "disallowed_horizon" for i in dec.issues)
+    print("  [ok] izinsiz pencere (7, 137) reddedildi")
+
+
+def test_izinsiz_holding_period_reddedilir():
+    """holding_period ML hedef ufkunu belirler — o da kisitli olmali."""
+    h = _ufuklu(20, holding=47)
+    dec = validate(compile_hypothesis(h), h, allowed_horizons=_UFUKLAR)
+    assert dec.decision == DecisionType.reject,         "holding_period_days=47 izinli degil ama kabul edildi"
+    assert any(i.type == "disallowed_horizon" for i in dec.issues)
+    print("  [ok] izinsiz holding_period (47) reddedildi")
+
+
+def test_kisit_verilmezse_serbest_geriye_uyum():
+    h = _ufuklu(7)
+    dec = validate(compile_hypothesis(h), h)      # allowed_horizons=None
+    assert dec.decision == DecisionType.accept,         "kisit verilmeden de ufuk denetleniyor (geriye uyum kirildi)"
+    print("  [ok] allowed_horizons verilmezse serbest (geriye uyum)")
+
+
 def main():
     test_valid_strategy_accepted()
     test_funding_rate_same_bar_execution_leak()
@@ -237,6 +288,10 @@ def main():
     test_model_modunda_gizli_gec_feature_yakalanir()
     test_model_modunda_bir_bar_sonra_islem_guvenli()
     test_dsl_formul_modunda_kullanilmayan_feature_sorun_degil()
+    test_izinli_ufuk_kabul_edilir()
+    test_izinsiz_pencere_reddedilir()
+    test_izinsiz_holding_period_reddedilir()
+    test_kisit_verilmezse_serbest_geriye_uyum()
     print("OK — tüm sızıntı/geçerlilik testleri geçti.")
 
 

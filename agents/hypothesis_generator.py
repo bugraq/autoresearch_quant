@@ -131,12 +131,16 @@ KRİTİK KURALLAR (yoksa hipotez reddedilir):
   - MODEL SEÇİMİ (hipotez → MODEL → backtest). İki yol var:
     (a) model.type="dsl_formula" (VARSAYILAN): sinyal formülünü SEN kurarsın
         (features + signal, multiply/conditional ile birleştirerek). Klasik yol.
-    (b) model.type="linear_regression" YA DA "naive_bayes": features bloğuna 2–5
-        ÖNGÖRÜCÜ özellik koy; MODEL bunları ileriki getiriyi tahmin edecek şekilde
-        OTOMATİK birleştirir (ağırlıkları geçmiş veriden öğrenir, walk-forward).
+    (b) İSTATİSTİKSEL/ML MODEL: features bloğuna 2–5 ÖNGÖRÜCÜ özellik koy; MODEL
+        bunları ileriki getiriyi tahmin edecek şekilde OTOMATİK birleştirir
+        (ağırlıkları geçmiş veriden öğrenir, walk-forward + embargo ile).
         Elle multiply/subtract yazmana GEREK YOK — birleştirmeyi modele bırak.
-        · linear_regression: sürekli getiri tahmini (özelliklerin doğrusal bileşimi).
-        · naive_bayes: yön (yukarı/aşağı) olasılığı.
+        Desteklenen model.type değerleri:
+        · linear_regression / ridge : doğrusal getiri tahmini
+        · random_forest / gradient_boosting : ağaç tabanlı — ÖZELLİK
+          ETKİLEŞİMLERİNİ (ör. momentum × hacim) kendi yakalar; doğrusal
+          model bir çarpımı temsil EDEMEZ, ağaç eder.
+        · naive_bayes : yön (yukarı/aşağı) olasılığı
         Model modunda `signal` alanı yine ZORUNLU ama YOK SAYILIR → placeholder koy:
         cross_sectional_rank(feature_ref(<ilk_feature>)).
     NE ZAMAN model? Birden çok özelliğin NASIL birleşeceğinden emin değilsen
