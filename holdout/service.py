@@ -50,6 +50,26 @@ CREATE TABLE IF NOT EXISTS holdout_access (
 _AUDIT_INDEX = ("CREATE INDEX IF NOT EXISTS ix_holdout_active "
                 "ON holdout_access (hypothesis_id, status)")
 
+# İLERİ-TEST SİCİLİ — holdout'tan FARKLI olarak tek-atış DEĞİLDİR.
+# Kilitli dönem sonlu ve tükenir; ileri-test dönemi ise her gün büyür. Aynı
+# aday zaman içinde tekrar tekrar ölçülür ve her ölçüm ayrı satır olur:
+# stratejinin canlı performans zaman serisi. "as_of" o ölçümün yapıldığı gün.
+_FORWARD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS forward_test (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    hypothesis_id TEXT NOT NULL,
+    as_of         TEXT NOT NULL,     -- ölçümün yapıldığı gün
+    period_start  TEXT,
+    period_end    TEXT,
+    sharpe        REAL,
+    total_return  REAL,
+    verdict       TEXT,              -- üç-dönem hükmü (evaluation/three_period)
+    recorded_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_forward_hyp
+    ON forward_test (hypothesis_id, as_of);
+"""
+
 # Eski şemadan (hypothesis_id UNIQUE, ek sütunlar yok) yeni şemaya taşıma.
 _MIGRATE_COLUMNS = {
     "status": "TEXT DEFAULT 'active'",
@@ -96,7 +116,47 @@ class HoldoutService:
         self._audit.executescript(_AUDIT_SCHEMA)   # yoksa kur
         self._migrate()                            # varsa yeni şemaya taşı
         self._audit.execute(_AUDIT_INDEX)          # sütunlar hazır: indeks
+        self._audit.executescript(_FORWARD_SCHEMA)  # ileri-test sicili
         self._audit.commit()
+
+    # ---------------- ileri-test sicili (tek-atış DEĞİL) ------------------
+    def record_forward(self, hypothesis_id: str, as_of, sharpe: float,
+                       total_return: float, verdict: str,
+                       period_start=None, period_end=None) -> None:
+        """Bir ileri-test ölçümünü sicile EKLE (üzerine yazmaz).
+
+        Holdout tek-atıştır çünkü kilitli dönem sonludur ve tükenir.
+        İleri-test dönemi ise her gün büyür: aynı aday tekrar tekrar
+        ölçülebilir ve ölçülmelidir. Her satır bir ölçüm anıdır; birikince
+        stratejinin canlı performans zaman serisi olur.
+        """
+        self._audit.execute(
+            "INSERT INTO forward_test (hypothesis_id, as_of, period_start, "
+            "period_end, sharpe, total_return, verdict, recorded_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (hypothesis_id, str(as_of), str(period_start) if period_start else None,
+             str(period_end) if period_end else None, float(sharpe),
+             float(total_return), verdict,
+             datetime.now(timezone.utc).isoformat()))
+        self._audit.commit()
+
+    def forward_log(self, hypothesis_id: "str | None" = None) -> list[tuple]:
+        """İleri-test ölçüm geçmişi (en yeni sonda)."""
+        sql = ("SELECT hypothesis_id, as_of, sharpe, total_return, verdict "
+               "FROM forward_test")
+        params: tuple = ()
+        if hypothesis_id:
+            sql += " WHERE hypothesis_id=?"
+            params = (hypothesis_id,)
+        return self._audit.execute(sql + " ORDER BY id", params).fetchall()
+
+    def latest_forward(self) -> "dict[str, float]":
+        """Her aday için EN SON ileri-test Sharpe'ı (üç-dönem hükmü için)."""
+        rows = self._audit.execute(
+            "SELECT hypothesis_id, sharpe FROM forward_test "
+            "WHERE id IN (SELECT MAX(id) FROM forward_test GROUP BY hypothesis_id)"
+        ).fetchall()
+        return {h: s for h, s in rows}
 
     # ---------------- şema taşıma (eski audit dosyaları) ------------------
     def _migrate(self) -> None:

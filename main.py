@@ -223,8 +223,108 @@ def print_trader_summary(memory: MemoryStore, rows, cfg: CampaignConfig) -> None
     print("=" * 74 + "\n")
 
 
+def _run_forward_gate(campaign: dict, cfg: CampaignConfig, sonuclar: list,
+                      research_data, holdout_data) -> "int | None":
+    """Holdout'u geçen adayları TAZE veride sına ve üç-dönem hükmünü bas.
+
+    Ağ/veri hatası araştırmayı bloklamaz: ileri-test yapılamazsa hüküm
+    'EKSİK' kalır — sessizce 'geçti' SAYILMAZ (bkz. three_period).
+    """
+    from datetime import date, timedelta
+
+    import pandas as pd
+
+    from contracts.hypothesis_spec import HypothesisSpec
+    from data.synthetic import concat_market
+    from evaluation.three_period import final_verdict, verdict_table
+
+    gecenler = [(h, r, s) for h, r, s, p in sonuclar if p]
+    print(f"\n=== ÜÇ-DÖNEM KAPISI ({len(gecenler)} aday kilitli dönemi geçti) ===")
+    print("  Kilitli dönem TEK bir rejim çekilişidir. Ölçüldü: holdout'u geçen")
+    print("  3 adayın 3'ü de taze veride çöktü. Bu yüzden ikinci, bağımsız bir")
+    print("  örneklem-dışı dönemde (sistemin hiç görmediği zaman) sınanıyorlar.\n")
+
+    baslangic = pd.Timestamp(str(campaign["end_date"])).date() + timedelta(days=1)
+    bitis = date.today()
+    try:
+        from scripts.forward_test import _load_forward_data, _sharpe
+        data_cfg = load_yaml("data.yaml")["data"]
+        print(f"  Taze dönem yükleniyor: {baslangic} → {bitis} "
+              f"(ilk koşuda uzun sürebilir; sonrası cache'ten)...")
+        taze = _load_forward_data(campaign, data_cfg, baslangic, bitis)
+    except Exception as e:  # noqa: BLE001 — ağ/veri sorunu hükmü bloklamasın
+        print(f"  Taze veri alınamadı ({type(e).__name__}: {str(e)[:120]}).")
+        print("  Hüküm EKSİK kalıyor — 'geçti' SAYILMIYOR.")
+        print(verdict_table([(h, r, s, None) for h, r, s in gecenler],
+                            cfg.min_acceptance_sharpe))
+        return None      # ölçülemedi -> hüküm EKSİK (0 ile karıştırılmamalı)
+
+    gecmis = concat_market(research_data, holdout_data) if research_data is not None \
+        else holdout_data
+    holdout_svc = HoldoutService(holdout_data, audit_path=HOLDOUT_DB,
+                                 cost_bps=cfg.cost_bps)
+    memory = MemoryStore(DB_PATH)
+    hyp_by_id = {h: j for h, j, _s in memory.accepted_hypotheses(limit=50)}
+    memory.close()
+
+    satirlar = []
+    for hid, r_sh, h_sh in gecenler:
+        try:
+            f_sh, f_tot = _forward_metrics(hyp_by_id[hid], taze, gecmis,
+                                           cfg.cost_bps, _sharpe)
+        except Exception as e:  # noqa: BLE001
+            print(f"  {hid}: ileri-test hesaplanamadı ({type(e).__name__})")
+            satirlar.append((hid, r_sh, h_sh, None))
+            continue
+        v = final_verdict(r_sh, h_sh, f_sh, cfg.min_acceptance_sharpe)
+        holdout_svc.record_forward(hid, bitis, f_sh, f_tot, v.verdict,
+                                   baslangic, bitis)
+        satirlar.append((hid, r_sh, h_sh, f_sh))
+        print(f"  {hid}: ileri-test Sharpe={f_sh:+.2f}  toplam={f_tot*100:+.0f}%")
+    holdout_svc.close()
+
+    print()
+    print(verdict_table(satirlar, cfg.min_acceptance_sharpe))
+    dogrulanan = [s for s in satirlar
+                  if final_verdict(*s[1:], cfg.min_acceptance_sharpe).passed]
+    print()
+    if dogrulanan:
+        print(f"  {len(dogrulanan)}/{len(satirlar)} aday İKİ bağımsız OOS döneminde de")
+        print("  ayakta kaldı. 'Alpha bulundu' DEĞİL — 'henüz ölmedi'. İzlemeye devam.")
+    else:
+        print("  Hiçbir aday iki OOS döneminde birden ayakta kalamadı.")
+        print("  Kilitli dönemi geçmeleri REJİM ŞANSIYDI — sistem bunu yakaladı.")
+    return len(dogrulanan)
+
+
+def _forward_metrics(hyp_json: str, taze, gecmis, cost_bps: float, sharpe_fn):
+    """Bir hipotezin taze dönemdeki (Sharpe, toplam getiri) değeri.
+
+    Sinyal ISITILARAK hesaplanır (geçmiş = araştırma+holdout): aksi hâlde model
+    taze dönemin İÇİNDE yeniden eğitilir ve ölçtüğümüz şey kabul edilen model
+    olmaz (bkz. holdout ısınma düzeltmesi).
+    """
+    import json
+
+    from backtest.engine import compute_pnl
+    from backtest.model_signal import compute_signal
+    from contracts.hypothesis_spec import HypothesisSpec
+    from data.synthetic import concat_market
+    from dsl import compile_hypothesis
+
+    hyp = HypothesisSpec.model_validate(json.loads(hyp_json))
+    graph = compile_hypothesis(hyp)
+    sig = compute_signal(graph, hyp, concat_market(gecmis, taze)).reindex(
+        index=taze.dates, columns=taze.get("close").columns)
+    net, _ = compute_pnl(sig, hyp, taze, cost_bps)
+    equity = (1.0 + net).cumprod()
+    return (sharpe_fn(net, getattr(taze, "bars_per_year", 365)),
+            float(equity.iloc[-1] - 1.0) if len(equity) else 0.0)
+
+
 def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
-                     research_data=None, invalidate_reason: "str | None" = None) -> None:
+                     research_data=None, invalidate_reason: "str | None" = None,
+                     skip_forward: bool = False) -> None:
     """--holdout: hafızadaki kabul edilmiş adayları kilitli dönemde sına.
 
     LLM'siz, deterministik son sınav. One-shot: aynı aday ikinci kez
@@ -280,6 +380,20 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
               f"holdout Sharpe={res.sharpe:.2f}  [{flag}]{cov}")
         sonuclar.append((hid, research_sharpe, res.sharpe, res.passed))
 
+    # ---- ÜÇ-DÖNEM KAPISI: holdout'u geçen aday OTOMATİK ileri-teste girer ----
+    # Neden otomatik: ölçüldü ki holdout'u geçen 3 adayın 3'ü de taze veride
+    # çöktü. Tek kilitli dönem bir REJİM çekilişidir. İleri-testi ayrı bir
+    # script'te insan kararına bırakmak, "3/3 geçti" diye erken sevinmeyi
+    # mümkün kılıyordu; artık hüküm sistemin kendisinden çıkıyor.
+    # NİHAİ HÜKÜM üç-dönem kapısından gelir; SADE OKUMA onu yansıtmalı.
+    # (Aksi hâlde çıktının bir yeri "hiçbiri ayakta kalamadı", öteki yeri
+    # "3/3 ayakta kaldı" der — bu oturumda bir kez yaşandı; okuyan hangisine
+    # inanacağını bilemez.)
+    dogrulanan = None
+    if sonuclar and any(p for *_x, p in sonuclar) and not skip_forward:
+        dogrulanan = _run_forward_gate(campaign, cfg, sonuclar,
+                                       research_data, holdout_data)
+
     if sonuclar:
         gecen = sum(1 for *_x, p in sonuclar if p)
         print("\n  SADE OKUMA:")
@@ -288,10 +402,20 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
             print("    döneminde iyi görünen sonuçlar, yeni veride tekrarlanmadı —")
             print("    yani o kazançlar gerçek bir kural değil, geçmişe uydurulmuş")
             print("    desenlerdi. Sistemin işi tam olarak bunu yakalamaktı.")
+        elif dogrulanan == 0:
+            print(f"    {gecen}/{len(sonuclar)} fikir kilitli dönemi geçti AMA")
+            print("    hiçbiri ikinci, bağımsız dönemde ayakta kalamadı.")
+            print("    Kilitli dönemi geçmeleri REJİM ŞANSIYDI — tek bir kilitli")
+            print("    dönem yeterli kanıt değildir. Sistem bunu yakaladı.")
+        elif dogrulanan:
+            print(f"    {gecen}/{len(sonuclar)} fikir kilitli dönemi, {dogrulanan} tanesi")
+            print("    ikinci bağımsız dönemi de geçti. Ciddiye alınacak bir işaret —")
+            print("    ama 'alpha bulundu' DEĞİL: çok sayıda deneme içinden çıktı,")
+            print("    çoklu-test düzeltmesi ayrıca kontrol edilmeli.")
         else:
-            print(f"    {gecen}/{len(sonuclar)} fikir hiç görmediği dönemde de")
-            print("    ayakta kaldı. Bu, ciddiye alınacak bir işarettir — ama")
-            print("    tek bir dönemdir; canlı takip (ileri-test) hâlâ gerekir.")
+            print(f"    {gecen}/{len(sonuclar)} fikir kilitli dönemde ayakta kaldı.")
+            print("    UYARI: ikinci dönem (ileri-test) ÖLÇÜLMEDİ — hüküm EKSİK.")
+            print("    Tek bir kilitli dönem yeterli kanıt değildir.")
         dusenler = [(h, a, b) for h, a, b, p in sonuclar if a > 0 and b < a - 0.3]
         if dusenler:
             print("\n    Araştırmada iyi görünüp kilitli dönemde düşenler:")
@@ -329,6 +453,11 @@ def main() -> None:
                              "(silmez; gerekçe+tarihle audit'e yazar) ve yeniden "
                              "değerlendirmeye izin ver. YALNIZCA değerlendirici "
                              "hatalıysa meşrudur — sonucu beğenmediğin için DEĞİL.")
+    parser.add_argument("--ileri-test-atla", action="store_true",
+                        dest="skip_forward",
+                        help="--holdout sonrası otomatik ileri-testi ATLA "
+                             "(taze veri indirme uzun sürüyorsa). Hüküm o zaman "
+                             "EKSİK kalır — 'geçti' SAYILMAZ.")
     parser.add_argument("--detay", action="store_true",
                         help="DETAYLI çıktı: her deneyin her adımı (üretim, derleme, "
                              "sızıntı, sinyal, backtest fold'ları, gate) tek tek basılır.")
@@ -348,7 +477,8 @@ def main() -> None:
 
     if args.holdout:
         run_holdout_mode(campaign, cfg, holdout_data, research_data=data,
-                         invalidate_reason=args.holdout_invalidate)
+                         invalidate_reason=args.holdout_invalidate,
+                         skip_forward=args.skip_forward)
         return
 
     # ---- Kampanya modu (holdout'a DOKUNULMAZ) ----
