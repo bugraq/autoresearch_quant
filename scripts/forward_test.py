@@ -126,46 +126,26 @@ def main() -> None:
   Gerçek alpha HER OOS döneminde tutar. Bir dönem uçup diğerinde çökmek =
   rejim-bağımlılık = güvenilmez sinyal.""")
 
-    # --- Kabul edilen en iyi strateji ---
-    db = os.path.join(HERE, "research_memory.sqlite")
-    if not os.path.exists(db):
-        P("\n  research_memory.sqlite yok — önce bir kampanya koş (agent.bat -> 1).")
-        return
-    acc = MemoryStore(db).accepted_hypotheses(limit=20)
-    if not acc or not acc[0][1]:
+    # --- ADAY SEÇİMİ tek yerden: evaluation/aday.py.
+    # Neden ortak modül: bu kural burada bir kez düzeltilmişti ama benchmark.py
+    # kendi kopyasını taşıyordu ve hâlâ `limit=1` (= en yüksek ARAŞTIRMA
+    # Sharpe'ı) kullanıyordu — yani iki araç iki farklı stratejiyi "bizimki"
+    # diye gösteriyordu. Araştırma Sharpe'ı kalite ölçüsü DEĞİLDİR: en parlak
+    # araştırma skoru genelde en aşırı-uydurulmuş adaydır (ölçüldü: hyp_0021
+    # araştırmada +1.14 ile birinci, taze veride −%44).
+    from evaluation.aday import en_iyi_aday
+    aday = en_iyi_aday(cfg.min_acceptance_sharpe)
+    if aday is None:
         P("\n  Kabul edilen strateji yok — ileri-test edilecek aday yok.")
         P("  (Sistem henüz hiçbir hipotezi kabul etmedi; bu da dürüst bir durum.)")
         return
-
-    # ADAY SEÇİMİ: KİLİTLİ DÖNEMİ GEÇEN varsa O seçilir; yoksa en yüksek
-    # araştırma Sharpe'ı.
-    # Neden: eskiden koşulsuz `limit=1` (= en yüksek araştırma Sharpe'ı)
-    # alınıyordu. Gerçek koşuda bu, holdout'ta ÇÖKEN hipotezi (hyp_0010,
-    # +0.97 -> -0.32) ileri-teste sokuyor, holdout'tan SAĞ ÇIKANI (hyp_0033,
-    # +0.72) atlıyordu. Araştırma Sharpe'ı kalite ölçüsü DEĞİLDİR — kilitli
-    # dönem sonucudur; ileri-test de o adayı izlemeli.
-    gecenler: set = set()
-    if os.path.exists(HOLDOUT_DB := os.path.join(HERE, "holdout_audit.sqlite")):
-        import sqlite3
-        _c = sqlite3.connect(f"file:{HOLDOUT_DB}?mode=ro", uri=True)
-        try:
-            kolonlar = {r[1] for r in _c.execute("PRAGMA table_info(holdout_access)")}
-            sql = "SELECT hypothesis_id FROM holdout_access WHERE passed=1"
-            if "status" in kolonlar:          # geçersiz kılınanlar sayılmaz
-                sql += " AND status='active'"
-            gecenler = {r[0] for r in _c.execute(sql)}
-        except sqlite3.Error:
-            pass
-        finally:
-            _c.close()
-
-    secim = next((a for a in acc if a[0] in gecenler), acc[0])
-    hid, hj, sh_research = secim
-    secim_not = ("kilitli dönemi GEÇEN aday" if hid in gecenler else
-                 ("en yüksek araştırma Sharpe'ı — kilitli dönemi geçen aday YOK"
-                  if gecenler or os.path.exists(HOLDOUT_DB)
-                  else "en yüksek araştırma Sharpe'ı (holdout henüz koşulmadı)"))
-    hyp = HypothesisSpec.model_validate(json.loads(hj))
+    hid, sh_research, secim_not = (aday.hypothesis_id, aday.research_sharpe,
+                                   aday.secim_nedeni)
+    hyp = aday.spec()
+    # Sicilden gelen adayda araştırma Sharpe'ı kayıtlı olmayabilir (kampanya
+    # hafızası --fresh ile sıfırlanmışsa). O zaman satırı hiç basma.
+    _rs = (f"\n                      (araştırma Sharpe ~{sh_research:+.2f})"
+           if sh_research is not None else "")
 
     # --- İleri-test dönemi: sistemin gördüğü son tarih + 1 gün → bugün ---
     seen_end = pd.Timestamp(str(campaign["end_date"])).date()
@@ -173,8 +153,7 @@ def main() -> None:
     forward_end = date.today()
     gun = (forward_end - forward_start).days
     P(f"""
-  Aday strateji     : {hid}  "{hyp.title}"
-                      (araştırma Sharpe ~{sh_research:+.2f})
+  Aday strateji     : {hid}  "{hyp.title}"{_rs}
   Neden bu aday     : {secim_not}
   Sistemin gördüğü  : ... {seen_end}  (araştırma + holdout buraya kadar)
   İLERİ-TEST dönemi : {forward_start}  →  {forward_end}   ({gun} gün, EL DEĞMEMİŞ)
@@ -220,8 +199,8 @@ def main() -> None:
     P("\n  Sistemin gördüğü dönem yükleniyor (araştırma + kilitli holdout)...")
     research, holdout = M.load_data(campaign, data_cfg, cfg.research_fraction)
     # Her donem, KENDINDEN ONCEKI veriyle isitilir (bkz. _run docstring).
-    r_sh, r_tot, r_dd, _, _ = _run(research)                 # ilk dilim: gecmis yok
-    h_sh, h_tot, h_dd, _, _ = _run(holdout, history=research)
+    r_sh, r_tot, r_dd, rb_sh, _ = _run(research)             # ilk dilim: gecmis yok
+    h_sh, h_tot, h_dd, hb_sh, _ = _run(holdout, history=research)
 
     # --- İleri-test (taze dönem) ---
     # SÜRE UYARISI GERÇEKÇİ OLMALI: burada "birkaç dakika" yazıyordu; gerçek
@@ -253,13 +232,26 @@ def main() -> None:
     P("\n" + "─" * 78)
     P("  STRATEJİ ZAMAN İÇİNDE  (%s bps masraf; * = örneklem-DIŞI)" % int(COST_BPS))
     P("─" * 78)
-    P(f"\n  {'Dönem':<30}{'Sharpe':>9}{'Toplam':>10}{'MaxDD':>8}")
-    P(f"  {'-'*30}{'-'*9}{'-'*10}{'-'*8}")
-    P(f"  {'Araştırma (in-sample)':<30}{r_sh:>+9.2f}{r_tot*100:>+9.0f}%{r_dd*100:>7.0f}%")
-    P(f"  {'Holdout (2023-24) *OOS':<30}{h_sh:>+9.2f}{h_tot*100:>+9.0f}%{h_dd*100:>7.0f}%")
+    # AL-TUT SÜTUNU: bu değer (_run'ın 4. dönüşü) hesaplanıyor ama HİÇ
+    # BASILMIYORDU — `fb_sh` atanıp hiçbir yerde kullanılmıyordu. Yani aracın
+    # kendi docstring'inde söz verdiği "pasif al-tut ile karşılaştırır" cümlesi
+    # çıktıda karşılığı olmayan bir vaatti. Asıl soru ("uğraşmaya değdi mi?")
+    # tam olarak bu sütunla cevaplanır.
+    P(f"\n  {'Dönem':<30}{'Sharpe':>9}{'Toplam':>10}{'MaxDD':>8}{'al-tut':>9}{'fark':>8}")
+    P(f"  {'-'*30}{'-'*9}{'-'*10}{'-'*8}{'-'*9}{'-'*8}")
+
+    def _satir(ad, sh, tot, dd, b_sh):
+        fark = "    –" if b_sh is None else f"{sh - b_sh:+7.2f}"
+        bs = "    –" if b_sh is None else f"{b_sh:+8.2f}"
+        P(f"  {ad:<30}{sh:>+9.2f}{tot*100:>+9.0f}%{dd*100:>7.0f}%{bs}{fark}")
+
+    _satir("Araştırma (in-sample)", r_sh, r_tot, r_dd, rb_sh)
+    _satir("Holdout (2023-24) *OOS", h_sh, h_tot, h_dd, hb_sh)
     if f_sh is not None:
-        P(f"  {'İleri-test (2025→bugün) *OOS':<30}{f_sh:>+9.2f}{f_tot*100:>+9.0f}%{f_dd*100:>7.0f}%")
+        _satir("İleri-test (2025→bugün) *OOS", f_sh, f_tot, f_dd, fb_sh)
         P(f"\n  İleri-test biriken getiri eğrisi:\n    {_sparkline(f_eq)}")
+    P("\n  'al-tut' = aynı evreni eşit ağırlıkla alıp TUTMAK (hiç uğraşmamak).")
+    P("  'fark' negatifse o dönemde uğraşmanın karşılığı alınmamıştır.")
 
     # --- Yorum: OOS TUTARLILIĞI (asıl soru) ---
     P("\n" + "─" * 78)

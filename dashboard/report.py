@@ -422,6 +422,88 @@ def _ret_cell(returns_json: "str | None") -> str:
     return f'<td class="num {cls}">{tot:+.0f}%</td>'
 
 
+def _kiyas(runs_dir: "str | None" = None) -> str:
+    """KIYAS: rastgele al-satçıyı / al-tut'u / duygusal trader'ı geçiyor muyuz?
+
+    Bu, hocanın açıkça koyduğu BAŞARI ÖLÇÜTÜDÜR ("alpha bulmak değil; parayı
+    rastgele al-sat yapandan veya psikolojik davranandan iyi yönetmek").
+    Dashboard'da bu bölüm HİÇ YOKTU — sonuç yalnızca bir terminal logunda
+    duruyordu, yani hocaya gösterilen görsel raporda ölçütün kendisi eksikti.
+
+    Kaynak: runs/benchmark.json (scripts/benchmark.py üretir). Yoksa bölüm
+    "henüz ölçülmedi" der — sessizce boş geçmez.
+    """
+    runs_dir = runs_dir or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
+    path = os.path.join(runs_dir, "benchmark.json")
+    if not os.path.exists(path):
+        return ('<div class="card desc">Kıyas henüz ölçülmedi. Çalıştır: '
+                '<code>python scripts/benchmark.py --ileri</code> '
+                '(veya agent.bat → [2]).</div>')
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (ValueError, OSError) as e:
+        return f'<div class="card desc">Kıyas dosyası okunamadı: {_esc(str(e))}</div>'
+
+    aday = d.get("aday", {})
+    tarih = str(d.get("kosum_tarihi", ""))[:16].replace("T", " ")
+    # BAYATLIK DAMGASI: kıyas ayrı bir süreçte koşar; dashboard'ın kendi
+    # oluşturma tarihiyle karıştırılmamalı. Eski bir ölçüm "güncel gerçek"
+    # sanılırsa, koddan silinmiş bir iddia yaşamaya devam eder.
+    ust = (f'<div class="desc">Ölçüm: <b>{_esc(tarih)}</b> · '
+           f'{d.get("cost_bps", "?")} bps masraf · '
+           f'{d.get("maymun_sayisi", "?")} rastgele al-satçı · aday '
+           f'<b>{_esc(str(aday.get("hypothesis_id", "?")))}</b> '
+           f'({_esc(str(aday.get("secim_nedeni", "")))})</div>')
+
+    bas = ("<tr><th>Dönem</th><th>bizim Sharpe</th><th>al-tut</th>"
+           "<th>rastgele</th><th>duygusal</th><th>geçtiğimiz</th></tr>")
+    satirlar = []
+    for p in d.get("donemler", []):
+        g = p.get("gecti", {})
+        oos = p.get("oos")
+        ad = _esc(str(p.get("ad", "?")))
+        # Araştırma satırı KANIT DEĞİL: aday zaten orada seçildi. Görsel olarak
+        # da soluk gösteriliyor ki "3/3 geçtik" diye okunmasın.
+        stil = "" if oos else ' style="opacity:.55"'
+        isaret = lambda b: ('<span class="good">✓</span>' if b        # noqa: E731
+                            else '<span class="bad">✗</span>')
+        satirlar.append(
+            f'<tr{stil}><td>{ad}{"" if oos else " <i>(kanıt değil)</i>"}</td>'
+            f'<td>{p.get("bizim", {}).get("sharpe", 0):+.2f}</td>'
+            f'<td>{p.get("al_tut", {}).get("sharpe", 0):+.2f} '
+            f'{isaret(g.get("al-tut"))}</td>'
+            f'<td>{p.get("maymun_ortanca_sharpe", 0):+.2f} '
+            f'{isaret(g.get("rastgele"))}</td>'
+            f'<td>{p.get("duygusal", {}).get("sharpe", 0):+.2f} '
+            f'{isaret(g.get("duygusal"))}</td>'
+            f'<td>{sum(1 for v in g.values() if v)}/3</td></tr>')
+
+    # DÜRÜST OKUMA — yalnız OOS dönemlerden. "3/3 geçtik" cümlesi tek başına
+    # kurulamaz: araştırma dönemi sayıya katılırsa ölçüt kendi kendini onaylar.
+    oos_donem = [p for p in d.get("donemler", []) if p.get("oos")]
+    if not oos_donem:
+        okuma = ("Yalnız araştırma döneminde ölçülmüş — bu KANIT DEĞİLDİR. "
+                 "Holdout/ileri-test için: <code>benchmark.py --ileri</code>.")
+    else:
+        gecilemeyen = sorted({r for p in oos_donem
+                              for r, v in p.get("gecti", {}).items() if not v})
+        if gecilemeyen:
+            okuma = ("Örneklem-dışı dönemlerde <b>geçemediğimiz</b> rakip(ler): "
+                     f"<b>{_esc(', '.join(gecilemeyen))}</b>. "
+                     "Rastgele al-satçıyı geçmek düşük bir eşiktir (o, işlem "
+                     "masrafından batar); asıl ölçü al-tut'tur.")
+        else:
+            okuma = ("Örneklem-dışı dönemlerin hepsinde üç rakibi de geçiyoruz. "
+                     "Yine de bu 'alpha' demek değildir — üç-dönem hükmü ve "
+                     "çoklu-test düzeltmesi ayrıca geçerli olmalı.")
+
+    return (ust + '<div class="card"><table class="tbl">' + bas
+            + "".join(satirlar) + "</table></div>"
+            + f'<div class="desc">{okuma}</div>')
+
+
 def _leaderboard(conn, holdout_db: "str | None" = None,
                  memory_db: "str | None" = None) -> str:
     """Kabul edilenler + ÜÇ-DÖNEM HÜKMÜ.
@@ -1154,6 +1236,14 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "birlikte değerlendirilmesinden çıkar; ölçülmemiş dönem 'geçti' "
                  "sayılmaz (EKSİK).",
                  _uc_donem(memory_db, holdout_db, min_acceptance_sharpe)),
+        _section("Kıyas — rastgele al-satçıyı ve al-tut'u geçiyor muyuz?",
+                 "Hocanın başarı ölçütü: şu an amaç 'alpha bulmak' değil; parayı "
+                 "rastgele al-sat yapan birinden, hiç uğraşmayandan (al-tut) ve "
+                 "duygusal davranandan daha iyi yönetebildiğimizi göstermek. "
+                 "Herkes AYNI evrende, AYNI tarihlerde, AYNI masrafla yarışır. "
+                 "Kıyas HER DÖNEMDE ayrı koşulur: araştırma döneminde kazanmak "
+                 "bir şey kanıtlamaz, çünkü aday zaten orada seçilmiştir.",
+                 _kiyas()),
         _section("Kampanya Özeti",
                  "Bu turda üretilen hipotezlerin karar dağılımı. 'Farklı yapı' = "
                  "pencereden bağımsız kaç farklı strateji YAPISI üretildi (yalnız "

@@ -40,7 +40,7 @@ scripts/      # şeffaflık araçları: anatomi, benchmark, Sharpe doğrulama
 python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ./.venv/Scripts/python.exe -m tests.test_contracts_smoke   # duman testi
-./.venv/Scripts/python.exe -m tests.run_all                # BÜTÜN testler (40)
+./.venv/Scripts/python.exe -m tests.run_all                # BÜTÜN testler (47)
 ```
 
 ## Yol haritası (walking skeleton)
@@ -208,18 +208,40 @@ Testler değil, **gerçek giriş noktaları** uçtan uca koşuldu: `agent.py`,
 `python agent.py` (veya **`agent.bat`'a çift tıkla**) → menüden seç. Komut
 ezberlemek yok:
 
+Panel açılışta önce **durum** gösterir (en güçlü aday + üç-dönem karnesi +
+hüküm), komut listesi sonra gelir. Durum yalnız SQLite okur — saniyeler sürer,
+veri indirmez. Menü, "hangi soruyu cevaplıyor" mantığına göre gruplu:
+
+**Sonuçlara bak** *(hızlı — veri indirmez)*
+
 | # | Menü | Ne yapar |
 |---|------|----------|
-| 1 | Kampanyayı izle (devam) | Ajanı koştur; görünüm seç: **canlı panel / detaylı akış / sade özet** |
-| 2 | Yeni kampanya (sıfırdan) | Hafızayı sıfırlar, baştan başlar (görünüm seçilir) |
-| 3 | LLM karşılaştırması | 5 LLM'i aynı bütçeyle yarıştırır (hangi model daha iyi hipotez) |
-| 4 | Holdout değerlendirmesi | Kabul edilenleri kilitli dönemde tek-atış sınar; geçenler **otomatik ileri-teste** girer ve üç-dönem hükmü basılır |
-| 5 | Dashboard (tarayıcı) | Görsel rapor: **üç-dönem hükmü**, çoklu-test, holdout, funnel |
-| 6 | **Tek fikri baştan sona anlat** | Önce sorar: **bulunan aday** (sicilden, üç-dönem karneli) mı, yeni fikir mi |
-| 7 | **Kıyas (maymun testi)** | random / al-tut / duygusal trader'ı geçiyor muyuz |
-| 8 | **İleri-test** | Kabul edileni sistemin gördüğü tarihten SONRAKİ taze veride koşar (rejim-bağımlılığı yakalar) |
-| 9 | Durum / ayarlar | Aktif evren, model, bütçe |
+| 1 | **Karne: üç dönemde ne oldu?** | Her adayın araştırma / kilitli holdout / taze ileri-test notu + hüküm |
+| 2 | **Kıyas: rastgeleyi ve al-tut'u geçiyor muyuz?** | Hocanın başarı ölçütü. **Her dönemde ayrı** yarış + geçme matrisi |
+| 3 | Dashboard (tarayıcı) | Görsel rapor: kıyas, üç-dönem hükmü, çoklu-test, holdout, huni |
+| 4 | Tek fikri baştan sona anlat | **Bulunan aday** (sicilden, üç-dönem karneli) veya yeni fikir; sade/teknik |
+
+**Yeni ölçüm yap** *(yavaş — veri indirir / LLM çağırır)*
+
+| # | Menü | Ne yapar |
+|---|------|----------|
+| 5 | Kampanyayı sürdür | Ajanı koştur; görünüm seç: **canlı panel / detaylı akış / sade özet** |
+| 6 | Yeni kampanya (hafızayı SIFIRLA) | Baştan başlar (**aday sicili ve holdout kaydı korunur**) |
+| 7 | Holdout sınavı | Kilitli dönemde tek-atış; geçenler **otomatik ileri-teste** girer |
+| 8 | İleri-test | Sistemin gördüğü tarihten SONRAKİ taze veri (rejim-bağımlılığı yakalar) |
+
+**Denetle** *(sayılar doğru mu?)*
+
+| # | Menü | Ne yapar |
+|---|------|----------|
+| 9 | **Sharpe gerçekten doğru mu?** | Motoru saf-NumPy ve Excel'le karşılaştırır; PnL zincirini gün gün açar |
+| t | **Bütün testleri koş** | 47 test: sızıntı, ödül-hackleme, ısınma, hizalama, PIT veri, aday seçimi |
+| k | LLM karşılaştırması | 5 modeli aynı veri/bütçeyle yarıştırır |
+| d | Durum / ayarlar | Aktif evren, model, bütçe, **işlem maliyeti**, tarih aralığı |
 | 0 | Çıkış | |
+
+*(Not: `9` ve `t` daha önce menüde HİÇ yoktu — yalnız bu README'de yazıyordu.
+Hocanın açıkça istediği "Sharpe'ı elle doğrula" aracı panelden erişilemiyordu.)*
 
 *(Eski streamlit web arayüzü emekli — `arsiv/`'de; işlevini agent.py + dashboard karşılıyor.)*
 
@@ -241,6 +263,25 @@ tek başına çalışır, `--log` ile çıktıyı `runs/`'a yazar.
 - **`benchmark.py`** — "başarı" ölçütü: stratejimizi rastgele al-satçı (N maymun),
   pasif al-tut ve duygusal trader ile AYNI koşullarda yarıştırır. **Masrafsız
   kontrol** ile üstünlüğün gerçek sinyalden mi yoksa düşük işlemden mi geldiğini ayırır.
+  - Yarış **her dönemde ayrı** koşar (araştırma / holdout / `--ileri` ile taze).
+    Araştırma dönemi kanıt değildir: aday zaten orada seçilmiştir, orada
+    kazanması beklenir. Anlamlı olan `*OOS` satırlarıdır.
+  - Sonuç `runs/benchmark.json`'a yazılır; dashboard onu okuyup **Kıyas**
+    bölümünü basar (ölçüm tarihi damgasıyla — bayat sayı güncel sanılmasın).
+
+  **Ölçülen sonuç (29.07.2026, aday `hyp_0033`, 10 bps):**
+
+  | dönem | al-tut | rastgele | duygusal |
+  |---|---|---|---|
+  | araştırma *(kanıt değil)* | ✗ | ✓ | ✓ |
+  | HOLDOUT *OOS | ✗ | ✓ | ✓ |
+  | İLERİ-TEST *OOS | ✓ | ✓ | ✓ |
+
+  Okuma: rastgele ve duygusal trader'ı **her dönemde** geçiyoruz (düşük eşik —
+  ikisi de işlem masrafından batar). Al-tut'u **boğa piyasasında geçemiyoruz**,
+  **ayı piyasasında geçiyoruz** (2025→bugün: al-tut −%70, biz +%8). Bu, piyasa
+  riski taşımayan long-short bir stratejiden beklenen davranıştır — düşüşümüz de
+  al-tut'un üçte biri (%20 vs %76).
 - **`verify_sharpe.py`** — "Sharpe gerçekten doğru mu?" Motoru saf-NumPy ve Excel
   ile karşılaştırır (PnL zincirini tek gün üzerinde açık hesapla), `runs/sharpe_verification.xlsx` üretir.
 

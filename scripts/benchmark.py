@@ -2,40 +2,55 @@
 KIYAS: bizim yaklasim RASTGELE al-satciyi ve PASIF al-tutcuyu geciyor mu?
 (hoca talebi, 22.07.2026)
 
-Hocanin yeni basari tanimi:
+Hocanin basari tanimi:
   "Su an icin bir basari alpha bulmak DEGIL; parayi rastgele al-sat yapan
    birine veya psikolojik davranan birine gore YUKARIDA bulmak da bir basari."
 
-Bu script tam bunu olcer. Ayni evren, ayni tarih, ayni islem maliyeti ve ayni
-portfoy kurallariyla dort seyi yaristirir:
+Ayni evren, ayni tarih, ayni islem maliyeti ve ayni portfoy kurallariyla dort
+seyi yaristirir:
 
   1) AL-TUT (pasif/piyasa)    : tum varliklari esit agirlikla al ve TUT.
-                                 "Endeks yatirimcisi" — hic ugrasmadan.
-  2) RASTGELE AL-SATCI (maymun): her gun rastgele long/short pozisyon. Tek
-                                 maymun sansli olabilir; bu yuzden N tane maymun
-                                 kosup DAGILIMINI cikaririz (adil karsilastirma).
-  3) PSIKOLOJIK (duygusal)     : dunku kazanani kovalayan (asiri tepki veren)
-                                 naif trend-takipcisi — tipik retail davranisi.
-  4) BIZIM STRATEJI            : hafizadaki en iyi kabul edilen aday
-                                 (yoksa ornek bir hipotez).
+  2) RASTGELE AL-SATCI (maymun): her bar rastgele long/short. Tek maymun sansli
+                                 olabilir; N maymun kosup DAGILIMINI cikaririz.
+  3) PSIKOLOJIK (duygusal)     : dunku kazanani kovalayan naif trend-takipcisi.
+  4) BIZIM STRATEJI            : en guclu KANITA sahip aday (evaluation/aday.py).
 
-Cikti: Sharpe / yillik getiri / toplam P&L / MaxDD tablosu + bizim stratejinin
-maymun dagiliminin KACINCI yuzdeliginde oldugu + sade yorum.
+═══════════════════════════════════════════════════════════════════════════
+NEDEN HER DONEMDE AYRI OLCULUYOR — bu betikte duzeltilen ASIL HATA
+═══════════════════════════════════════════════════════════════════════════
+Eskiden kiyas YALNIZCA ARASTIRMA doneminde kosuyordu (load_data(...)[0]).
+Ama arastirma donemi, stratejinin SECILDIGI donemdir: aday zaten "orada iyi
+gorundugu icin" kabul edilmistir. Orada maymunu gecmesi kacinilmazdir ve
+hicbir sey kanitlamaz — kendi sinavini kendi yazmak gibidir.
+
+Hocanin sorusu ("rastgele al-sat yapandan iyi miyiz?") GERCEK DUNYA sorusudur;
+cevabi yalnizca ORNEKLEM-DISI donemden gelir. Bu yuzden yaris her donemde
+ayri kosuluyor ve sonuc bir MATRIS olarak basiliyor:
+
+    donem x rakip  ->  geciyor muyuz?
+
+Olculdu (29.07.2026): arastirmada 3/3 rakibi geciyorduk; ayni aday kilitli
+donemde al-tut'un ALTINA dustu. Tek tablo bu farki gizliyordu.
+
+ISINMA: arastirma disindaki her donem, KENDINDEN ONCEKI veriyle isitilir.
+Aksi halde rolling pencereler donemin basinda NaN kalir ve ML modeli donemin
+ICINDE yeniden egitilir — yani kabul edilen model degil BASKA bir model
+olculur (holdout/service.py'da ayni hata duzeltilmisti).
 
 Kullanim:
     .venv/Scripts/python.exe scripts/benchmark.py
     .venv/Scripts/python.exe scripts/benchmark.py --monkeys 500 --log
+    .venv/Scripts/python.exe scripts/benchmark.py --ileri     # taze donemi de kat
 
 NOT: Kripto evreninde "SPY" yoktur; piyasa proxy'si = evrenin esit-agirlikli
-sepeti (ayni evren -> en dürüst karsilastirma). Hisse kampanyasinda bu zaten
-esit-agirlikli S&P benzeri sepettir.
+sepeti (ayni evren -> en durust karsilastirma).
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -90,7 +105,7 @@ def _stats(net_pnl: pd.Series, bpy: int) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Benchmark'lar — hepsi AYNI motordan (compute_pnl) gecer: adil
+# Yarismacilar — hepsi AYNI motordan (compute_pnl) gecer: adil
 # --------------------------------------------------------------------------
 def _template_hyp(universe_source: str, long_q: float = 0.2):
     """Rastgele/psikolojik traderlar icin ORTAK portfoy+execution sablonu.
@@ -114,7 +129,7 @@ def _template_hyp(universe_source: str, long_q: float = 0.2):
 
 
 def buy_and_hold(data) -> pd.Series:
-    """Esit-agirlikli AL-TUT: her gun mevcut varliklarin ortalama getirisi.
+    """Esit-agirlikli AL-TUT: her bar mevcut varliklarin ortalama getirisi.
     Al-tut oldugu icin devir ~0; tek seferlik giris maliyeti ihmal edilir."""
     close = data.get("close")
     try:
@@ -150,30 +165,86 @@ def psychological_trader(data, template) -> pd.Series:
     return net
 
 
-def our_strategy(data, cfg, cost_bps: float = COST_BPS):
-    """Hafizadaki en iyi kabul edilen aday; yoksa ornek (canned) hipotez.
-    Donder: (etiket, net_pnl serisi)."""
+def our_strategy(data, hyp, graph, history=None, cost_bps: float = COST_BPS):
+    """Bizim aday, verilen donemde. history verilirse ISINMALI hesaplanir.
+
+    Isinma zorunlu (arastirma disindaki donemlerde): sinyal gecmis+donem
+    birlesiminde hesaplanip yalniz doneme kesilir. Aksi halde rolling
+    pencereler bosta kalir ve ML modeli donemin ICINDE yeniden egitilir.
+    Bilgi akisi tek yonlu (gecmis -> donem): sizinti degildir.
+    """
     from backtest.engine import compute_pnl
     from backtest.model_signal import compute_signal
-    from dsl import compile_hypothesis
-    from contracts.hypothesis_spec import HypothesisSpec
-    from memory.store import MemoryStore
+    from data.synthetic import concat_market
 
-    hyp, etiket = None, ""
-    db = os.path.join(HERE, "research_memory.sqlite")
-    if os.path.exists(db):
-        rows = MemoryStore(db).accepted_hypotheses(limit=1)
-        if rows and rows[0][1]:
-            hyp = HypothesisSpec.model_validate(json.loads(rows[0][1]))
-            etiket = f"BIZIM (hafizadan: {rows[0][0]}, Sharpe~{rows[0][2]:+.2f})"
-    if hyp is None:
-        from scripts.anatomy import _canned_hypothesis
-        campaign = _load()["campaign"]
-        hyp = _canned_hypothesis(campaign)
-        etiket = "BIZIM (ornek hipotez — hafizada kabul yok)"
-    signal = compute_signal(compile_hypothesis(hyp), hyp, data)
+    if history is None:
+        signal = compute_signal(graph, hyp, data)
+    else:
+        signal = compute_signal(graph, hyp, concat_market(history, data)).reindex(
+            index=data.dates, columns=data.get("close").columns)
     net, _ = compute_pnl(signal, hyp, data, cost_bps)
-    return etiket, net
+    return net
+
+
+# --------------------------------------------------------------------------
+def _yaris(data, template, hyp, graph, monkeys: int, history=None) -> dict:
+    """Bir DONEMDE dort yarismaciyi kostur -> tum istatistikler."""
+    bpy = data.bars_per_year
+    bh = _stats(buy_and_hold(data), bpy)
+
+    m_sh, m_tot, m_sh_free = [], [], []
+    for i in range(monkeys):
+        net = random_trader(data, template, seed=1000 + i)
+        m_sh.append(_sharpe(net, bpy))
+        m_tot.append(_total_return(net))
+        m_sh_free.append(_sharpe(random_trader(data, template, seed=1000 + i,
+                                               cost_bps=0.0), bpy))
+    m_sh, m_sh_free = np.array(m_sh), np.array(m_sh_free)
+
+    psy = _stats(psychological_trader(data, template), bpy)
+    our = _stats(our_strategy(data, hyp, graph, history), bpy)
+    our_free = _sharpe(our_strategy(data, hyp, graph, history, cost_bps=0.0), bpy)
+
+    return {
+        "bpy": bpy, "bh": bh, "psy": psy, "our": our, "our_free": our_free,
+        "m_sh_med": float(np.median(m_sh)), "m_sh_best": float(m_sh.max()),
+        "m_tot_med": float(np.median(m_tot)),
+        "m_sh_med_free": float(np.median(m_sh_free)),
+        "m_sh_best_free": float(m_sh_free.max()),
+        "pctile": float((m_sh < our["sharpe"]).mean() * 100),
+        "pctile_free": float((m_sh_free < our_free).mean() * 100),
+        "bars": len(data.dates),
+        "aralik": f"{data.dates[0].date()}→{data.dates[-1].date()}",
+    }
+
+
+def _gecti(y: dict) -> "dict[str, bool]":
+    """Bu donemde hangi rakibi geciyoruz? (Sharpe karsilastirmasi)"""
+    return {"al-tut": y["our"]["sharpe"] > y["bh"]["sharpe"],
+            "rastgele": y["our"]["sharpe"] > y["m_sh_med"],
+            "duygusal": y["our"]["sharpe"] > y["psy"]["sharpe"]}
+
+
+def _donem_tablosu(ad: str, y: dict, monkeys: int) -> None:
+    P(f"\n  ── {ad}  ({y['aralik']}, {y['bars']} bar) " + "─" * max(0, 50 - len(ad)))
+    P(f"\n  {'Yaklasim':<34} {'Sharpe':>8} {'Yillik':>9} {'Toplam':>9} {'MaxDD':>7}")
+    P(f"  {'-'*34} {'-'*8} {'-'*9} {'-'*9} {'-'*7}")
+
+    def row(a, s):
+        P(f"  {a:<34} {s['sharpe']:>+8.2f} {s['yillik']*100:>+8.1f}% "
+          f"{s['toplam']*100:>+8.1f}% {s['maxdd']*100:>6.0f}%")
+
+    row("Al-tut (pasif piyasa)", y["bh"])
+    P(f"  {'Rastgele al-satci — ORTANCA maymun':<34} {y['m_sh_med']:>+8.2f} "
+      f"{'':>9} {y['m_tot_med']*100:>+8.1f}%")
+    P(f"  {'Rastgele al-satci — EN SANSLI':<34} {y['m_sh_best']:>+8.2f} "
+      f"{'(' + str(monkeys) + ' maymunun en iyisi)':>26}")
+    row("Psikolojik (duygusal) trader", y["psy"])
+    P(f"  {'-'*34} {'-'*8} {'-'*9} {'-'*9} {'-'*7}")
+    row("BIZIM STRATEJI", y["our"])
+    P(f"\n  Masrafsiz kontrol (masraf=0, 'gercek sinyal mi?' testi):"
+      f"  maymun ortanca {y['m_sh_med_free']:+.2f} | bizim {y['our_free']:+.2f}"
+      f"  → maymunlarin %{y['pctile_free']:.0f}'inden iyi")
 
 
 # --------------------------------------------------------------------------
@@ -188,6 +259,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Bizim yaklasim random/al-tut'u geciyor mu?")
     ap.add_argument("--monkeys", type=int, default=200,
                     help="Kac rastgele al-satci (maymun) kosulsun (varsayilan 200).")
+    ap.add_argument("--ileri", action="store_true",
+                    help="TAZE donemi de kat (Binance'den indirir, ILK kosuda 1 saat+).")
     ap.add_argument("--log", action="store_true", help="runs/benchmark.log'a yaz.")
     args = ap.parse_args()
     _WRITE = args.log
@@ -197,166 +270,171 @@ def main() -> None:
         pass
 
     import main as M
+    from dsl import compile_hypothesis
+    from evaluation.aday import en_iyi_aday
+
     cfgs = _load()
     campaign, data_cfg = cfgs["campaign"], cfgs["data_cfg"]
     cfg = M.build_config(campaign)
 
     P("\n" + "═" * 78)
-    P("  KIYAS: bizim yaklasim rastgele al-satciyi ve al-tut'u geciyor mu?")
+    P("  KIYAS: rastgele al-satciyi, al-tut'u ve duygusal trader'i geciyor muyuz?")
     P("═" * 78)
+    P(f"  Kosum tarihi: {datetime.now():%Y-%m-%d %H:%M}   |   "
+      f"Islem masrafi: {COST_BPS:.0f} bps (kampanyadan)")
     P("""
   Hocanin olcutu: su an amac 'alpha bulmak' degil. Amac, parayi rastgele
   al-sat yapan birinden ve hic ugrasmayan (al-tut) birinden DAHA IYI
-  yonetebildigimizi gostermek. Asagida herkes AYNI piyasada, AYNI tarihlerde,
-  AYNI islem masrafiyla yarisiyor.""")
+  yonetebildigimizi gostermek. Herkes AYNI piyasada, AYNI tarihlerde,
+  AYNI islem masrafiyla yarisiyor.
 
-    P("\n  Veri yukleniyor...")
-    data, _ = M.load_data(campaign, data_cfg, cfg.research_fraction)
-    bpy = data.bars_per_year
-    n_varlik = len(data.get("close").columns)
-    P(f"  [ok] {campaign.get('universe')}: {n_varlik} varlik, {len(data.dates)} bar, "
-      f"{data.dates[0].date()}→{data.dates[-1].date()}")
+  DIKKAT — kiyas HER DONEMDE ayri kosuluyor. Arastirma doneminde kazanmak
+  bir sey kanitlamaz: aday zaten "orada iyi gorundugu icin" secilmistir.
+  Asil cevap ORNEKLEM-DISI (holdout / ileri-test) satirlarindadir.""")
 
+    # --- ADAY: en guclu KANITA sahip olan (en yuksek Sharpe'li DEGIL) ---
+    aday = en_iyi_aday(cfg.min_acceptance_sharpe
+                       if hasattr(cfg, "min_acceptance_sharpe") else 0.5)
+    if aday is None:
+        P("\n  Kabul edilmis strateji YOK — kiyas edilecek aday yok.")
+        P("  Once bir kampanya kos:  python main.py    (veya agent.bat -> Kampanya)")
+        return
+    hyp = aday.spec()
+    graph = compile_hypothesis(hyp)
+    P(f"""
+  Aday strateji : {aday.hypothesis_id}  "{aday.title[:58]}"
+  Neden bu aday : {aday.secim_nedeni}
+                  (aday secimi ARASTIRMA Sharpe'ina gore YAPILMAZ — en parlak
+                   arastirma skoru genelde en asiri-uydurulmus adaydir.)""")
+
+    P("\n  Veri yukleniyor (arastirma + kilitli holdout)...")
+    research, holdout = M.load_data(campaign, data_cfg, cfg.research_fraction)
     template = _template_hyp(campaign.get("universe", "sp500_point_in_time"))
 
-    # --- 1) AL-TUT ---
-    P("\n  [1/4] Al-tut (pasif piyasa) hesaplaniyor...")
-    bh = _stats(buy_and_hold(data), bpy)
+    donemler: "list[tuple[str, dict]]" = []
+    P(f"  [1/2] ARASTIRMA doneminde yaris ({args.monkeys} maymun)...")
+    donemler.append(("ARASTIRMA (in-sample — kanit DEGIL)",
+                     _yaris(research, template, hyp, graph, args.monkeys)))
+    P(f"  [2/2] KILITLI HOLDOUT doneminde yaris (isinmali)...")
+    donemler.append(("HOLDOUT (kilitli, *OOS)",
+                     _yaris(holdout, template, hyp, graph, args.monkeys,
+                            history=research)))
 
-    # --- 2) RASTGELE (N maymun) — hem masrafli hem MASRAFSIZ ---
-    # Masrafsiz kritik: masrafli maymun sadece islem-masrafindan batabilir.
-    # Masrafsizda rastgele islem ~0 getirir (beklenen). Bizimki masrafsizda da
-    # POZITIF kalirsa, ustunlugumuz 'az islem yaptik'tan degil GERCEK SINYAL'den.
-    P(f"  [2/4] {args.monkeys} rastgele al-satci (maymun) kosuluyor (masrafli+masrafsiz)...")
-    monkey_sharpes, monkey_totals, monkey_sharpes_free = [], [], []
-    for i in range(args.monkeys):
-        net = random_trader(data, template, seed=1000 + i)
-        monkey_sharpes.append(_sharpe(net, bpy))
-        monkey_totals.append(_total_return(net))
-        net0 = random_trader(data, template, seed=1000 + i, cost_bps=0.0)
-        monkey_sharpes_free.append(_sharpe(net0, bpy))
-    monkey_sharpes = np.array(monkey_sharpes)
-    monkey_sharpes_free = np.array(monkey_sharpes_free)
-    m_sh_med = float(np.median(monkey_sharpes))
-    m_sh_best = float(monkey_sharpes.max())
-    m_tot_med = float(np.median(monkey_totals))
-    m_sh_med_free = float(np.median(monkey_sharpes_free))
-    m_sh_best_free = float(monkey_sharpes_free.max())
+    if args.ileri:
+        P("  [+] TAZE donem indiriliyor (ILK kosuda 1 saat+ surebilir)...")
+        try:
+            from data.synthetic import concat_market
+            from scripts.forward_test import _load_forward_data
+            f_bas = pd.Timestamp(str(campaign["end_date"])).date() + timedelta(days=1)
+            fdata = _load_forward_data(campaign, data_cfg, f_bas, date.today())
+            if len(fdata.dates) >= 20:
+                donemler.append(("ILERI-TEST (taze, *OOS)",
+                                 _yaris(fdata, template, hyp, graph, args.monkeys,
+                                        history=concat_market(research, holdout))))
+            else:
+                P("  (taze donem cok kisa — atlandi)")
+        except Exception as e:  # noqa: BLE001
+            P(f"  Taze veri cekilemedi: {type(e).__name__}: {str(e)[:150]}")
 
-    # --- 3) PSIKOLOJIK ---
-    P("  [3/4] Psikolojik (duygusal/momentum-kovalayan) trader hesaplaniyor...")
-    psy = _stats(psychological_trader(data, template), bpy)
-
-    # --- 4) BIZIM — hem masrafli hem MASRAFSIZ ---
-    P("  [4/4] Bizim strateji hesaplaniyor (masrafli+masrafsiz)...")
-    our_label, our_net = our_strategy(data, cfg)
-    our = _stats(our_net, bpy)
-    _, our_net_free = our_strategy(data, cfg, cost_bps=0.0)
-    our_sh_free = _sharpe(our_net_free, bpy)
-
-    # Bizim strateji maymun dagiliminin kacinci yuzdeliginde? (masrafli VE masrafsiz)
-    pctile = float((monkey_sharpes < our["sharpe"]).mean() * 100)
-    pctile_free = float((monkey_sharpes_free < our_sh_free).mean() * 100)
-
-    # ---------------- TABLO ----------------
+    # ---------------- DONEM DONEM TABLOLAR ----------------
     P("\n" + "─" * 78)
-    P("  SONUCLAR  (hepsi ayni evren / tarih / %s bps masraf)" % int(COST_BPS))
+    P("  SONUCLAR")
     P("─" * 78)
-    P(f"\n  {'Yaklasim':<34} {'Sharpe':>8} {'Yillik':>9} {'Toplam':>9} {'MaxDD':>7}")
-    P(f"  {'-'*34} {'-'*8} {'-'*9} {'-'*9} {'-'*7}")
+    for ad, y in donemler:
+        _donem_tablosu(ad, y, args.monkeys)
 
-    def row(ad, s):
-        P(f"  {ad:<34} {s['sharpe']:>+8.2f} {s['yillik']*100:>+8.1f}% "
-          f"{s['toplam']*100:>+8.1f}% {s['maxdd']*100:>6.0f}%")
+    # ---------------- ASIL CIKTI: GECME MATRISI ----------------
+    P("\n" + "═" * 78)
+    P("  HANGI RAKIBI, HANGI DONEMDE GECIYORUZ?   (✓ geciyoruz / ✗ gecemiyoruz)")
+    P("═" * 78)
+    P(f"\n  {'Donem':<36}{'al-tut':>9}{'rastgele':>10}{'duygusal':>10}{'  toplam':>9}")
+    P(f"  {'-'*36}{'-'*9}{'-'*10}{'-'*10}{'-'*9}")
+    for ad, y in donemler:
+        g = _gecti(y)
+        isaret = lambda b: "  ✓" if b else "  ✗"   # noqa: E731
+        P(f"  {ad:<36}{isaret(g['al-tut']):>9}{isaret(g['rastgele']):>10}"
+          f"{isaret(g['duygusal']):>10}{f'{sum(g.values())}/3':>9}")
 
-    row("Al-tut (pasif piyasa)", bh)
-    P(f"  {'Rastgele al-satci — ORTANCA maymun':<34} {m_sh_med:>+8.2f} "
-      f"{'':>9} {m_tot_med*100:>+8.1f}% {'':>7}")
-    P(f"  {'Rastgele al-satci — EN SANSLI maymun':<34} {m_sh_best:>+8.2f} "
-      f"{'(' + str(args.monkeys) + ' maymun icinde en iyisi)':>26}")
-    row("Psikolojik (duygusal) trader", psy)
-    P(f"  {'-'*34} {'-'*8} {'-'*9} {'-'*9} {'-'*7}")
-    row(our_label, our)
+    oos = [(ad, y) for ad, y in donemler if "*OOS" in ad]
+    P("""
+  Okuma: ilk satir (ARASTIRMA) KANIT DEGILDIR — aday orada secildigi icin
+  kazanmasi beklenir. Anlamli olan *OOS isaretli satirlardir.""")
 
-    # --- Masrafsiz kontrol tablosu (gercek sinyal mi, sadece az-islem mi?) ---
-    P(f"\n  MASRAFSIZ kontrol (islem masrafi = 0; 'gercek sinyal' testi):")
-    P(f"    Rastgele maymun — ortanca Sharpe : {m_sh_med_free:>+6.2f}   "
-      f"(beklenen ~0: rastgele islem bilgi tasimaz)")
-    P(f"    Rastgele maymun — en sansli      : {m_sh_best_free:>+6.2f}   "
-      f"({args.monkeys} maymunun en iyisi bile)")
-    P(f"    BIZIM strateji                   : {our_sh_free:>+6.2f}   "
-      f"→ maymunlarin %{pctile_free:.0f}'inden iyi")
-
-    # ---------------- SADE YORUM ----------------
-    P("\n" + "─" * 78)
-    P("  NE ANLAMA GELIYOR?")
-    P("─" * 78)
-    P(f"""
-  • Bizim strateji, {args.monkeys} rastgele maymunun %{pctile:.0f}'inden daha iyi (masrafli).
-    DIKKAT — bu DUSUK bir esiktir: rastgele maymun cilginca al-sat yapip
-    masraftan batar (ortanca %{m_tot_med*100:+.0f}). Onu gecmek "iyi strateji"
-    demek degil, sadece "delice islem yapmiyoruz" demektir.
-
-  • ASIL OLCU — masrafsiz kontrol: masraf SIFIR olsa bile maymunlarin
-    %{pctile_free:.0f}'inden iyiyiz. Rastgele maymun masrafsizda ~0 Sharpe uretir
-    (rastgele islem bilgi tasimaz). Bizimki masrafsizda {our_sh_free:+.2f} —
-    {'POZITIF kaliyor, yani ustunluk masraftan kacmaktan DEGIL bir sinyalden geliyor.'
-     if our_sh_free > 0 else
-     'yani masraf sifirken bile kazandirmiyor: ortada sinyal YOK.'}""")
-
-    yorumlar = []
-    if our["sharpe"] > m_sh_med:
-        yorumlar.append("rastgele al-satcinin (ortanca maymun) USTUNDE ✓")
-    else:
-        yorumlar.append("rastgele al-satciyi henuz GECEMIYOR ✗")
-    if our["sharpe"] > bh["sharpe"]:
-        yorumlar.append("pasif al-tut'un USTUNDE ✓")
-    else:
-        yorumlar.append("pasif al-tut'un ALTINDA ✗")
-    if our["sharpe"] > psy["sharpe"]:
-        yorumlar.append("duygusal trader'in USTUNDE ✓")
-    else:
-        yorumlar.append("duygusal trader'in ALTINDA ✗")
-    P("  • Bizim strateji: " + "; ".join(yorumlar) + ".")
+    # RISK TARAFI — Sharpe tek basina long-short bir stratejiye haksizlik eder:
+    # al-tut piyasa riskini TASIR (borsa cakilirsa o da cakilir), long-short
+    # tasimaz. Bunu bir "biz kazandik" puanina cevirmiyoruz (o, olcutu sonradan
+    # kendine gore secmek olurdu) — sadece OLGUYU koyuyoruz, trader kendi karar
+    # versin: ayni parayi ne kadar dususe maruz birakiyoruz?
+    P(f"\n  Risk tarafi (olgu, hukum degil) — en derin dusus (MaxDD):")
+    P(f"  {'Donem':<36}{'BIZIM':>10}{'al-tut':>10}")
+    P(f"  {'-'*36}{'-'*10}{'-'*10}")
+    for ad, y in donemler:
+        P(f"  {ad:<36}{y['our']['maxdd']*100:>9.0f}%{y['bh']['maxdd']*100:>9.0f}%")
+    P("""  Al-tut piyasa riski TASIR; long-short tasimaz. Dusuk getiri tek basina
+  eleme sebebi degildir — ama 'piyasayi yendik' de denemez.""")
 
     # ---------------- DURUST HUKUM ----------------
-    # ONEMLI: kiyas sayisi ("3'te 2 geciyoruz") TEK BASINA hukum olamaz.
-    # Ortanca maymun -%95 batarken bizim -%20 batmamiz "gectik" sayilirsa
-    # cikti, para kaybini basari gibi gosterir. Once PARAYA bakilir.
-    from evaluation.plain import durust_hukum, _sar
-    baslik, gerekce = durust_hukum(our["toplam"], our["sharpe"], bh["toplam"])
-    gecti = sum("✓" in y for y in yorumlar)
+    # Kiyas sayisi ("3'te 2 geciyoruz") TEK BASINA hukum olamaz: ortanca maymun
+    # -%95 batarken bizim -%20 batmamiz "gectik" sayilirsa cikti, para kaybini
+    # basari gibi gosterir. Once PARAYA bakilir.
+    from evaluation.plain import _sar, durust_hukum
 
     P("\n" + "─" * 78)
-    P(f"  HUKUM: {baslik}")
+    P("  HUKUM")
     P("─" * 78)
-    for satir in gerekce:
-        for parca in _sar(satir, 72):
-            P(f"  {parca}")
+    if not oos:
+        P("\n  Ornek-disi donem olculemedi — hukum verilemez.")
+    for ad, y in oos:
+        g = _gecti(y)
+        baslik, gerekce = durust_hukum(y["our"]["toplam"], y["our"]["sharpe"],
+                                       y["bh"]["toplam"])
+        P(f"\n  [{ad}]  → {baslik}")
+        for satir in gerekce:
+            for parca in _sar(satir, 70):
+                P(f"     {parca}")
+        gecemedik = [k for k, v in g.items() if not v]
+        if gecemedik:
+            P(f"     Bu donemde GECEMEDIGIMIZ rakip(ler): {', '.join(gecemedik)}.")
+        else:
+            P("     Bu donemde uc rakibi de geciyoruz.")
 
-    P(f"""
-  Kiyas sayaci (yalnizca bilgi): 3 olcutten {gecti}'unu geciyoruz.
-  Bu sayac TEK BASINA "basardik" demek DEGILDIR — yukaridaki hukum esastir.
-  Ortanca maymun %{m_tot_med*100:+.0f} yaparken bizim %{our['toplam']*100:+.0f}
-  yapmamiz, "maymunu gectik" olsa bile paranin arttigi anlamina gelmez.""")
-
-    if "ornek hipotez" in our_label:
-        P("""
-  ⚠ DIKKAT — OLCULEN SEY GERCEK BIR BULUS DEGIL:
-    Hafizada kabul edilmis strateji YOK, bu yuzden yer tutucu (ornek) bir
-    hipotez olculdu. Yukaridaki bizim-satirimiz sistemin BULDUGU bir
-    stratejinin karnesi degildir; sadece boru hattinin ucdan uca calistigini
-    gosterir. Gercek kiyas icin once kampanya kosup kabul uretilmeli:
-        python main.py""")
+    # Uc-donem hukmu (sistemin kalici kurali) — tek kaynak
+    v = aday.hukum()
+    P(f"\n  Sistemin uc-donem hukmu ({aday.hypothesis_id}): {v.verdict}")
+    for r in v.reasons:
+        for parca in _sar(r, 70):
+            P(f"     {parca}")
 
     P("""
-  NOT: Bu kiyas ARASTIRMA verisinde yapildi — yani fikrin gelistirildigi
-  donemde. Gercek not, hic gorulmemis kilitli donemden gelir:
-      python main.py --holdout""")
+  NOT: "maymunu gecmek" DUSUK bir esiktir — rastgele maymun cilginca al-sat
+  yapip masraftan batar. Onu gecmek "iyi strateji" demek degil, "delice islem
+  yapmiyoruz" demektir. Asil olcu al-tut ve masrafsiz kontroldur.""")
     P("═" * 78 + "\n")
 
+    # SONUCU KALICI YAP. Kiyas, hocanin BASARI OLCUTUdur ama sonucu yalnizca
+    # bir terminal logunda duruyordu: dashboard'da (hocaya gosterilen gorsel
+    # rapor) bu bolum HIC YOKTU. JSON'a yazilinca dashboard okuyup gosterebilir
+    # ve "ne zaman olculdu" damgasi da beraberinde gider (bayat sayi tehlikesi).
+    os.makedirs(os.path.join(HERE, "runs"), exist_ok=True)
+    import json as _json
+    ozet = {
+        "kosum_tarihi": datetime.now().isoformat(timespec="seconds"),
+        "cost_bps": COST_BPS, "maymun_sayisi": args.monkeys,
+        "aday": {"hypothesis_id": aday.hypothesis_id, "title": aday.title,
+                 "secim_nedeni": aday.secim_nedeni, "hukum": v.verdict},
+        "donemler": [
+            {"ad": ad, "oos": "*OOS" in ad, "aralik": y["aralik"],
+             "bizim": y["our"], "al_tut": y["bh"], "duygusal": y["psy"],
+             "maymun_ortanca_sharpe": y["m_sh_med"],
+             "bizim_masrafsiz_sharpe": y["our_free"],
+             "maymun_yuzdeligi": y["pctile"], "gecti": _gecti(y)}
+            for ad, y in donemler],
+    }
+    with open(os.path.join(HERE, "runs", "benchmark.json"), "w",
+              encoding="utf-8") as f:
+        _json.dump(ozet, f, ensure_ascii=False, indent=2)
+
     if _WRITE:
-        os.makedirs(os.path.join(HERE, "runs"), exist_ok=True)
         p = os.path.join(HERE, "runs", "benchmark.log")
         with open(p, "w", encoding="utf-8") as f:
             f.write("\n".join(_LOG))
