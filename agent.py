@@ -186,14 +186,23 @@ def main() -> None:
             sade = Prompt.ask(
                 "Anlatım nasıl olsun? (s = sade/herkes anlar, t = teknik/detaylı)",
                 choices=["s", "t"], default="s")
-            canli = Prompt.ask(
-                "Yapay zeka çağrılsın mı? (h = çağırma, hazır örnek — bedava/hızlı)",
-                choices=["e", "h"], default="h")
+            kaynak = Prompt.ask(
+                "Hangi fikir? (b = BULUNAN aday [sicilden, üç-dönem karneli], "
+                "y = yeni fikir üret)", choices=["b", "y"], default="b")
             args = ["scripts/anatomy.py", "--log"]
-            if sade == "s":
-                args.append("--sade")
-            if canli == "h":
-                args.append("--canned")
+            if kaynak == "b":
+                # Sicildeki gerçek adayı anlat: hocaya gösterilecek olan bu.
+                args.append("--aday")
+                if sade == "s":
+                    args.append("--sade")   # sade mod aday desteklemezse teknik akar
+            else:
+                canli = Prompt.ask(
+                    "Yapay zeka çağrılsın mı? (h = çağırma, hazır örnek — bedava/hızlı)",
+                    choices=["e", "h"], default="h")
+                if sade == "s":
+                    args.append("--sade")
+                if canli == "h":
+                    args.append("--canned")
             _run(console, args)
         elif action == "BENCHMARK":
             _run(console, ["scripts/benchmark.py", "--log"])

@@ -229,6 +229,10 @@ Sistemin "kara kutu" olmadığını gösteren, hocaya sunum için üç araç. He
 tek başına çalışır, `--log` ile çıktıyı `runs/`'a yazar.
 
 - **`anatomy.py`** — BİR yatırım fikrini doğuşundan kararına adım adım açar.
+  - `--aday` : YENİ fikir üretmez; **sicildeki mevcut adayı** baştan sona anlatır
+    (varsayılan: üç dönemden geçmiş olan). Üstte üç-dönem karnesi + hüküm.
+    `--aday hyp_0033` ile belirli bir aday seçilir. Hocaya "işte bulunan tek
+    aday" demek için olan mod budur.
   - `--sade` : konuyu hiç bilmeyenin anlayacağı düz Türkçe (6 adım, her terim açıklamalı, hipotez "kart" olarak).
   - (bayraksız) : teknik mod — LLM'e giden tam prompt, ham cevap, cümle→graf→**sayı** dönüşümü (her düğümün paneli), model eğitimi (embargo tarihleriyle), PnL açık hesap, metrikler, gate.
   - `--canned` : LLM çağırmadan (bedava/hızlı); prompt yine gerçektir.

@@ -219,6 +219,17 @@ def generate(campaign, models, cfg, use_llm: bool):
         P("\n  [ORNEK CEVAP - LLM boyle bir JSON dondurur]")
         box(json.dumps(json.loads(hyp.model_dump_json()), ensure_ascii=False, indent=2)[:2500])
 
+    _hipotez_cumleleri(hyp)
+    return hyp
+
+
+def _hipotez_cumleleri(hyp) -> None:
+    """ADIM 3: hipotezi CUMLE olarak anlat.
+
+    Ayri fonksiyon, cunku iki yoldan cagriliyor: yeni uretimde (generate) ve
+    SICILDEKI mevcut adayi anlatirken (--aday). Iki kopya olsaydi biri
+    guncellenip oteki geride kalirdi.
+    """
     step("3", "HIPOTEZ — CUMLE OLARAK (insan ne okuyor?)")
     P(f"\n  Kimlik    : {hyp.hypothesis_id}")
     P(f"  Baslik    : {hyp.title}")
@@ -244,7 +255,6 @@ def generate(campaign, models, cfg, use_llm: bool):
     P("       hipotez kendini yalnizca DAHA SIKI baglayabilir (bkz. hard_gate).")
     P("\n  >> Ekonomik mekanizma ZORUNLU alan. Gerekce yazamayan hipotez sema")
     P("     dogrulamasindan gecemez — 'veri madenciligi' hipotezleri boylece elenir.")
-    return hyp
 
 
 def _canned_hypothesis(campaign):
@@ -893,6 +903,87 @@ def generate_quiet(campaign, models, cfg, use_llm: bool, data):
         return provider._parse(resp.text, "hyp_anatomi")
 
 
+def _sar_satir(metin: str, genislik: int) -> "list[str]":
+    kelime, satir, out = metin.split(), "", []
+    for k in kelime:
+        if len(satir) + len(k) + 1 > genislik:
+            out.append(satir)
+            satir = k
+        else:
+            satir = f"{satir} {k}".strip()
+    if satir:
+        out.append(satir)
+    return out
+
+
+def _sicilden_aday(hyp_id: "str | None" = None):
+    """KAMPANYALAR ARASI sicilden bir adayi getir (varsayilan: DOGRULANMIS).
+
+    Neden gerekli: anatomy her kosuda YENI hipotez uretiyordu; elimizdeki
+    GERCEK adayi (uc donemden gecmis olani) bastan sona anlatamiyordu. Oysa
+    gosterilecek sey odur. Sicil kampanyalar arasi yasadigi icin aday,
+    bulundugu kampanya kapansa bile burada durur.
+    """
+    import sqlite3
+
+    from contracts.hypothesis_spec import HypothesisSpec
+    from evaluation.three_period import final_verdict
+
+    yol = os.path.join(HERE, "holdout_audit.sqlite")
+    if not os.path.exists(yol):
+        raise SystemExit("holdout_audit.sqlite yok — once: python main.py --holdout")
+    c = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+    try:
+        sicil = c.execute(
+            "SELECT fingerprint, hypothesis_id, title, campaign, hypothesis_json, "
+            "research_sharpe FROM candidate_registry").fetchall()
+        holdout = dict(c.execute(
+            "SELECT hypothesis_hash, sharpe FROM holdout_access "
+            "WHERE status='active' AND hypothesis_hash IS NOT NULL").fetchall())
+        ileri = dict(c.execute(
+            "SELECT hypothesis_id, sharpe FROM forward_test WHERE id IN "
+            "(SELECT MAX(id) FROM forward_test GROUP BY hypothesis_id)").fetchall())
+    finally:
+        c.close()
+    if not sicil:
+        raise SystemExit("Sicilde aday yok — once: python main.py --holdout")
+
+    adaylar = []
+    for iz, hid, title, camp, hj, r_sh in sicil:
+        v = final_verdict(r_sh, holdout.get(iz), ileri.get(hid))
+        adaylar.append(dict(hid=hid, title=title, campaign=camp, json=hj,
+                            r=r_sh, h=holdout.get(iz), f=ileri.get(hid), verdict=v))
+    if hyp_id:
+        secim = next((a for a in adaylar if a["hid"] == hyp_id), None)
+        if secim is None:
+            raise SystemExit(f"Sicilde '{hyp_id}' yok. Mevcut: "
+                             f"{[a['hid'] for a in adaylar]}")
+    else:
+        secim = (next((a for a in adaylar if a["verdict"].passed), None)
+                 or max(adaylar, key=lambda a: (a["h"] if a["h"] is not None else -99)))
+    return HypothesisSpec.model_validate_json(secim["json"]), secim
+
+
+def _aday_kunyesi(meta) -> None:
+    """Adayin kunyesi + UC-DONEM karnesi (anatominin girisi)."""
+    v = meta["verdict"]
+    step("0b", "ADAYIN KUNYESI — bu hipotez nereden geldi, notu ne?")
+    P(f"\n  Kimlik            : {meta['hid']}")
+    P(f"  Baslik            : {meta['title']}")
+    P(f"  Bulundugu kampanya: {meta['campaign'] or '-'}")
+    P("\n  UC-DONEM KARNESI (kilitli holdout TEK BASINA yetmez):")
+    for ad, deger, aciklama in (
+            ("arastirma ", meta["r"], "fikrin GELISTIRILDIGI donem — kanit DEGIL"),
+            ("holdout   ", meta["h"], "kilitli, tek-atis: hic gorulmedi"),
+            ("ileri-test", meta["f"], "holdout'tan SONRAKI taze zaman")):
+        gost = f"{deger:+.2f}" if deger is not None else "  -  "
+        P(f"    {ad} Sharpe = {gost}   ({aciklama})")
+    P(f"\n  HUKUM: {v.verdict}")
+    for r in v.reasons:
+        for parca in _sar_satir(r, 70):
+            P(f"    {parca}")
+
+
 def main() -> None:
     global _WRITE_LOG
     ap = argparse.ArgumentParser(description="Tek hipotezin bastan sona anatomisi")
@@ -904,6 +995,10 @@ def main() -> None:
                          "anlayacagi duz Turkce, adim adim.")
     ap.add_argument("--log", action="store_true",
                     help="Ciktiyi runs/anatomy.log dosyasina da yaz.")
+    ap.add_argument("--aday", nargs="?", const="__EN_IYI__", metavar="HIPOTEZ_ID",
+                    help="YENI hipotez URETME; SICILDEKI mevcut adayi bastan sona "
+                         "anlat (varsayilan: uc donemden gecmis olan). "
+                         "Ornek: --aday   ya da   --aday hyp_0033")
     args = ap.parse_args()
     _WRITE_LOG = args.log
 
@@ -911,6 +1006,16 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:  # noqa: BLE001
         pass
+
+    # --sade henuz SICIL adayini anlatmiyor (narrate yeni hipotez uretir).
+    # Sessizce yeni fikir uretmek, kullanicinin ISTEDIGI adayi gostermemek
+    # demektir — bu oturumda defalarca duzeltilen "sessizce baska sey yap"
+    # hatasinin aynisi. Acikca soyle ve TEKNIK moda dus.
+    if args.sade and args.aday:
+        P("  [not] --sade su an SICIL adayini anlatmiyor (yeni fikir uretir).")
+        P("        --aday istendigi icin TEKNIK moda geciliyor: aday korunuyor,")
+        P("        anlatim teknik. (Sade+aday isteniyorsa narrate() genisletilmeli.)")
+        args.sade = False
 
     if args.sade:
         from dotenv import load_dotenv
@@ -925,7 +1030,17 @@ def main() -> None:
         P("#  TEK HIPOTEZ ANATOMISI — dogusundan kararina, her adim acik")
         P("#" * 78)
         campaign, models, cfg, data = setup(not args.canned)
-        hyp = generate(campaign, models, cfg, use_llm=not args.canned)
+        if args.aday:
+            hyp, meta = _sicilden_aday(
+                None if args.aday == "__EN_IYI__" else args.aday)
+            _aday_kunyesi(meta)
+            P("")
+            P("  NOT: Bu aday ZATEN uretildi ve uc donemde sinandi. Asagida onun")
+            P("  ADIM ADIM nasil sayiya donup karara baglandigi gosterilir; LLM")
+            P("  prompt/cevap adimlari atlanir (hipotez zaten elimizde).")
+            _hipotez_cumleleri(hyp)
+        else:
+            hyp = generate(campaign, models, cfg, use_llm=not args.canned)
         graph = to_graph(hyp)
         signal = to_numbers(graph, hyp, data)
         to_pnl(hyp, data, signal, cfg)
