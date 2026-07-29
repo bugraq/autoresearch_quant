@@ -267,12 +267,49 @@ def _vprint(verbose: bool, msg: str) -> None:
         print(msg, flush=True)
 
 
+def align_allowed_fields(cfg: CampaignConfig, data: MarketData) -> list[str]:
+    """İzin verilen alanları YÜKLENEN verinin gerçekten sahip olduklarıyla kes.
+
+    Neden gerekli (gerçek koşuda patladı): `compare.py`, değerlendirme ortamını
+    `compare.yaml` ile sentetik benchmark'a çeviriyor ama `allowed_fields`
+    kampanyadan (kripto) geliyordu. LLM'e "funding_rate kullanabilirsin"
+    deniyor, sentetik veride öyle bir alan yok ve koşu
+    `KeyError: 'Veri alanı yok: funding_rate'` ile ÇÖKÜYORDU — 5 yarışmacının
+    4'ü hiç hipotez üretemeden düştü, karşılaştırma tablosu anlamsız çıktı.
+
+    Kaynak/kampanya eşleşmezliği ileride de olacaktır (veri kaynağını
+    değiştirip allowed_fields'ı güncellemeyi unutmak kolay). Bu yüzden düzeltme
+    tek bir çağrı yerine BURADA: her kampanya yolu run_campaign'den geçer.
+
+    Sessizce düzeltmez — neyin düştüğünü yüksek sesle söyler.
+    """
+    mevcut = set(data.fields)
+    izinli = [f for f in cfg.allowed_fields if f in mevcut]
+    eksik = [f for f in cfg.allowed_fields if f not in mevcut]
+    if eksik:
+        print(f"[uyarı] Kampanya şu alanlara izin veriyor ama YÜKLENEN VERİDE "
+              f"yoklar: {', '.join(eksik)}")
+        print(f"        Veri kaynağı ile campaign.yaml uyuşmuyor. Bu alanlar "
+              f"LLM'e SUNULMAYACAK (aksi halde üretilen her hipotez çöker).")
+        print(f"        Kalan kullanılabilir alanlar: {', '.join(izinli) or '(YOK)'}")
+    if not izinli:
+        raise ValueError(
+            "Kampanyanın izin verdiği alanların HİÇBİRİ veride yok "
+            f"(izinli: {cfg.allowed_fields}; veride: {sorted(mevcut)}). "
+            "configs/campaign.yaml -> allowed_fields ile configs/data.yaml -> "
+            "source uyumsuz.")
+    return izinli
+
+
 def run_campaign(provider: HypothesisProvider, data: MarketData,
                  memory: MemoryStore, cfg: CampaignConfig, critic=None,
                  literature: list[str] | None = None,
                  on_event=None, verbose: bool = False) -> None:
     from agents.quant_critic import DummyCritic
     from agents.backtest_auditor import BacktestAuditor
+
+    # Veri ile kampanya kısıtlarını hizala (bkz. align_allowed_fields).
+    cfg.allowed_fields = align_allowed_fields(cfg, data)
     critic = critic or DummyCritic()
     auditor = BacktestAuditor()   # bağımsız deterministik backtest denetçisi (Doküman 15)
 
@@ -552,13 +589,20 @@ def run_campaign(provider: HypothesisProvider, data: MarketData,
             if rob.permutation_pvalue >= 0.10:
                 why.append(f"permütasyon perm_p={rob.permutation_pvalue:.2f}>=0.10 "
                            f"(sinyal karıştırılınca da aynı kazanç = şans)")
+            # ELMA-ELMA: sağlamlık testleri TÜM-SERİ Sharpe kullanır, gate ise
+            # fold ORTALAMASI. İkisini yan yana yazmak düşüşü olduğundan büyük
+            # gösteriyordu ("0.93 -> -0.17"); doğrusu base_sharpe ile kıyastır.
             if rob.cost2x_sharpe <= 0:
-                why.append(f"maliyet 2x'te Sharpe={rob.cost2x_sharpe:.2f}<=0")
+                why.append(f"maliyet 2x'te Sharpe {rob.base_sharpe:+.2f} -> "
+                           f"{rob.cost2x_sharpe:+.2f} (<=0: masraf kârı yiyor)")
             if rob.param_min_sharpe <= 0:
                 why.append(f"pencere ±%20'de Sharpe={rob.param_min_sharpe:.2f}<=0 "
                            f"(parametreye aşırı duyarlı = kırılgan)")
-            print(f"{tag} -> RED (sağlamlık, Sharpe {sharpe:.2f}): "
-                  f"{'; '.join(why) or 'fold tutarlılığı'}")
+            if rob.extra_delay_sharpe <= 0:
+                why.append(f"bir bar geç işlemde Sharpe {rob.base_sharpe:+.2f} -> "
+                           f"{rob.extra_delay_sharpe:+.2f} (<=0: alpha çok hızlı/kırılgan)")
+            print(f"{tag} -> RED (sağlamlık; gate Sharpe {sharpe:.2f} = fold ort., "
+                  f"tüm-seri {rob.base_sharpe:+.2f}): {'; '.join(why) or 'fold tutarlılığı'}")
             continue
 
         # 5b) SAYISAL PARAMETRE OPTİMİZASYONU (Doküman 27) — SADECE İYİLEŞTİRME.

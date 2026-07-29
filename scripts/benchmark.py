@@ -43,7 +43,12 @@ import pandas as pd
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-COST_BPS = 5.0
+# MALIYET KAMPANYADAN OKUNUR (configs/campaign.yaml -> budget.cost_bps).
+# Sabit 5.0 yazmak, aktif kripto kampanyasi 10.0 kullanirken bu betigi
+# YARIM maliyetle kosturuyordu: ayni hipotez kampanyada baska, burada
+# baska (daha iyimser) Sharpe gosteriyordu. Config yoksa 5.0 varsayilir.
+from evaluation.plain import kampanya_cost_bps
+COST_BPS = kampanya_cost_bps(5.0)
 _LOG: list[str] = []
 _WRITE = False
 
@@ -288,14 +293,16 @@ def main() -> None:
     P("─" * 78)
     P(f"""
   • Bizim strateji, {args.monkeys} rastgele maymunun %{pctile:.0f}'inden daha iyi (masrafli).
-    (%50 = ortalama bir maymun kadar; %95+ = maymunlarin cok ustunde =
-     sansla aciklanamayacak bir beceri isareti.)
+    DIKKAT — bu DUSUK bir esiktir: rastgele maymun cilginca al-sat yapip
+    masraftan batar (ortanca %{m_tot_med*100:+.0f}). Onu gecmek "iyi strateji"
+    demek degil, sadece "delice islem yapmiyoruz" demektir.
 
-  • EN ONEMLI: masraf SIFIR olsa bile maymunlarin %{pctile_free:.0f}'inden iyiyiz.
-    Rastgele maymun masrafsizda ~0 Sharpe uretir (rastgele islem bilgi
-    tasimaz). Bizimki masrafsizda da POZITIF ({our_sh_free:+.2f}) kaliyor —
-    demek ki ustunlugumuz 'az islem yaptik/masraftan kactik'tan DEGIL,
-    gercekten bir SINYAL yakalamaktan geliyor. Iste asil fark bu.""")
+  • ASIL OLCU — masrafsiz kontrol: masraf SIFIR olsa bile maymunlarin
+    %{pctile_free:.0f}'inden iyiyiz. Rastgele maymun masrafsizda ~0 Sharpe uretir
+    (rastgele islem bilgi tasimaz). Bizimki masrafsizda {our_sh_free:+.2f} —
+    {'POZITIF kaliyor, yani ustunluk masraftan kacmaktan DEGIL bir sinyalden geliyor.'
+     if our_sh_free > 0 else
+     'yani masraf sifirken bile kazandirmiyor: ortada sinyal YOK.'}""")
 
     yorumlar = []
     if our["sharpe"] > m_sh_med:
@@ -312,13 +319,40 @@ def main() -> None:
         yorumlar.append("duygusal trader'in ALTINDA ✗")
     P("  • Bizim strateji: " + "; ".join(yorumlar) + ".")
 
+    # ---------------- DURUST HUKUM ----------------
+    # ONEMLI: kiyas sayisi ("3'te 2 geciyoruz") TEK BASINA hukum olamaz.
+    # Ortanca maymun -%95 batarken bizim -%20 batmamiz "gectik" sayilirsa
+    # cikti, para kaybini basari gibi gosterir. Once PARAYA bakilir.
+    from evaluation.plain import durust_hukum, _sar
+    baslik, gerekce = durust_hukum(our["toplam"], our["sharpe"], bh["toplam"])
     gecti = sum("✓" in y for y in yorumlar)
-    P(f"""
-  • OZET: 3 kiyastan {gecti}'unu geciyoruz. Hocanin olcutu tam olarak buydu —
-    "alpha" degil, rastgele/pasif/duygusal davranisi gecmek. {'Bu esik saglandi.' if gecti >= 2 else 'Bu esik henuz tam saglanmadi; strateji gelistirilecek.'}
 
-  NOT: Bu kiyas arastirma verisinde. Nihai dogrulama yine kilitli holdout +
-  coklu-test ile yapilir; bu tablo 'gunluk basari' olcutu, son soz degil.""")
+    P("\n" + "─" * 78)
+    P(f"  HUKUM: {baslik}")
+    P("─" * 78)
+    for satir in gerekce:
+        for parca in _sar(satir, 72):
+            P(f"  {parca}")
+
+    P(f"""
+  Kiyas sayaci (yalnizca bilgi): 3 olcutten {gecti}'unu geciyoruz.
+  Bu sayac TEK BASINA "basardik" demek DEGILDIR — yukaridaki hukum esastir.
+  Ortanca maymun %{m_tot_med*100:+.0f} yaparken bizim %{our['toplam']*100:+.0f}
+  yapmamiz, "maymunu gectik" olsa bile paranin arttigi anlamina gelmez.""")
+
+    if "ornek hipotez" in our_label:
+        P("""
+  ⚠ DIKKAT — OLCULEN SEY GERCEK BIR BULUS DEGIL:
+    Hafizada kabul edilmis strateji YOK, bu yuzden yer tutucu (ornek) bir
+    hipotez olculdu. Yukaridaki bizim-satirimiz sistemin BULDUGU bir
+    stratejinin karnesi degildir; sadece boru hattinin ucdan uca calistigini
+    gosterir. Gercek kiyas icin once kampanya kosup kabul uretilmeli:
+        python main.py""")
+
+    P("""
+  NOT: Bu kiyas ARASTIRMA verisinde yapildi — yani fikrin gelistirildigi
+  donemde. Gercek not, hic gorulmemis kilitli donemden gelir:
+      python main.py --holdout""")
     P("═" * 78 + "\n")
 
     if _WRITE:

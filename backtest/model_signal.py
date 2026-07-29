@@ -52,10 +52,20 @@ def _feature_panels(graph: StrategyGraph, data: MarketData) -> "dict[str, pd.Dat
 
 
 def forward_return(data: MarketData, horizon: int) -> pd.DataFrame:
-    """Hedef: t→t+horizon (ileriki) getiri paneli. GELECEK — sadece eğitim hedefi."""
-    close = data.get("close")
+    """Hedef: t→t+horizon (ileriki) getiri paneli. GELECEK — sadece eğitim hedefi.
+
+    DÜZELTİLMİŞ fiyattan (adjusted_close): motor PnL'i temettü+split dahil
+    düzeltilmiş fiyattan hesaplıyor. Hedefi HAM close'tan almak, modele
+    "temettüsüz getiriyi tahmin et" dedirtip sonucu "temettülü getiri" ile
+    ölçmek olurdu — hisse senedinde sistematik bir uyumsuzluk (kriptoda fark
+    yok: temettü/split yok). Aynı tutarsızlık IC ölçümünü de bozardı.
+    """
+    try:
+        px = data.get("adjusted_close")
+    except KeyError:
+        px = data.get("close")            # eski/sentetik veri: düzeltme yok
     h = max(1, int(horizon))
-    return close.shift(-h) / close - 1.0
+    return px.shift(-h) / px - 1.0
 
 
 def evaluate_model_signal(graph: StrategyGraph, hyp: HypothesisSpec, data: MarketData,

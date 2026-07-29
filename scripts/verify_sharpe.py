@@ -22,6 +22,13 @@ import math
 import os
 import sys
 
+# Windows konsolu (cp1254) "→ × √" gibi karakterlerde UnicodeEncodeError
+# ile PATLAR (bu betik hocaya canli gosteriliyor). main.py'deki korumanin aynisi.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 import numpy as np
 import pandas as pd
 
@@ -38,7 +45,12 @@ from dsl import compile_hypothesis
 from backtest import evaluate_signal
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runs")
-COST_BPS = 5.0
+# MALIYET KAMPANYADAN OKUNUR (configs/campaign.yaml -> budget.cost_bps).
+# Sabit 5.0 yazmak, aktif kripto kampanyasi 10.0 kullanirken bu betigi
+# YARIM maliyetle kosturuyordu: ayni hipotez kampanyada baska, burada
+# baska (daha iyimser) Sharpe gosteriyordu. Config yoksa 5.0 varsayilir.
+from evaluation.plain import kampanya_cost_bps
+COST_BPS = kampanya_cost_bps(5.0)
 
 
 def _line(title: str = "") -> None:

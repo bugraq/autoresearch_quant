@@ -52,25 +52,48 @@ def evaluate(result: BacktestResult, hyp: HypothesisSpec,
                             description=f"Turnover {max_turn:.1f} > {max_turnover}."))
 
     # --- Walk-forward tutarlılığı (rejimler arası kararlılık) ---
-    # Hipotezin kendi taahhüdü varsa onu, yoksa kampanya varsayılanını kullan.
+    # KAMPANYA EŞİĞİ TABANDIR (reward hacking önlemi). Hipotezin kendi taahhüdü
+    # yalnızca eşiği SIKILAŞTIRABİLİR, asla gevşetemez.
+    #
+    # Kapatılan açık: eskiden `hyp.falsification.… or min_positive_folds`
+    # yazıyordu, yani LLM'in beyanı kampanya eşiğinin YERİNE geçiyordu.
+    # LLM `minimum_positive_walk_forward_folds: 0.1` yazınca, 5 dönemin 4'ünde
+    # para kaybedip birinde patlayan bir strateji KABUL alıyordu — üstelik
+    # modülün kendi docstring'i "kabul kapısını LLM'e vermeyiz" diyordu.
+    # Klasik Goodhart/ödül-hackleme deliği: değerlendirilen taraf, kendi
+    # geçme notunu yazamaz.
     fold_frac = result.exposures.get("positive_fold_fraction")
+    own_fold_req = hyp.falsification.minimum_positive_walk_forward_folds
     if fold_frac is not None:
-        req = hyp.falsification.minimum_positive_walk_forward_folds or min_positive_folds
+        req = max(min_positive_folds, own_fold_req or 0.0)
         if fold_frac < req:
+            kaynak = ("kampanya tabanı" if req == min_positive_folds
+                      else "hipotezin kendi (daha sıkı) taahhüdü")
             issues.append(Issue(
                 type="fold_inconsistency",
                 description=(f"Pozitif fold oranı {fold_frac:.0%} < gerekli {req:.0%} "
-                            f"— strateji dönemler arası tutarsız.")))
+                            f"({kaynak}) — strateji dönemler arası tutarsız.")))
 
     if issues:
         return Decision(hypothesis_id=hyp.hypothesis_id, decision=DecisionType.reject,
                         source=DecisionSource.gate, severity=Severity.medium, issues=issues)
 
     # Kabul edildi. Kendi ön-kayıtlı iddiasını tutturdu mu? (bilgi amaçlı)
-    met_own = sharpe >= hyp.falsification.minimum_oos_sharpe
-    info = [] if met_own else [Issue(
-        type="below_own_claim",
-        description=(f"Kabul edildi ama kendi ön-kayıtlı eşiğinin "
-                     f"({hyp.falsification.minimum_oos_sharpe:.2f}) altında — iddia tam tutmadı."))]
+    info: list[Issue] = []
+    if sharpe < hyp.falsification.minimum_oos_sharpe:
+        info.append(Issue(
+            type="below_own_claim",
+            description=(f"Kabul edildi ama kendi ön-kayıtlı eşiğinin "
+                         f"({hyp.falsification.minimum_oos_sharpe:.2f}) altında — "
+                         f"iddia tam tutmadı.")))
+    # LLM'in kampanyadan GEVŞEK bir tutarlılık eşiği beyan etmesi artık kabulü
+    # etkilemiyor; ama beyanın kendisi kayda geçer (ödül-hackleme girişimlerinin
+    # izi sürülebilsin — sessizce yok saymak, denetlenemez yapardı).
+    if own_fold_req is not None and own_fold_req < min_positive_folds:
+        info.append(Issue(
+            type="weaker_own_threshold",
+            description=(f"Hipotez, kampanya tabanından ({min_positive_folds:.0%}) "
+                         f"GEVŞEK bir tutarlılık eşiği beyan etti "
+                         f"({own_fold_req:.0%}); yok sayıldı — kampanya tabanı uygulandı.")))
     return Decision(hypothesis_id=hyp.hypothesis_id, decision=DecisionType.accept,
                     source=DecisionSource.gate, severity=Severity.low, issues=info)

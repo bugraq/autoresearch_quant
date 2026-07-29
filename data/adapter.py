@@ -280,6 +280,26 @@ class PointInTimeIndexAdapter:
 SP500PointInTimeAdapter = PointInTimeIndexAdapter
 
 
+def bars_per_year_from_config(config: dict) -> int:
+    """configs/data.yaml -> yıllıklaştırma ölçeği (VERİ YÜKLEMEDEN).
+
+    Neden gerekli: dashboard ve çoklu-test raporu yalnızca SQLite hafızasını
+    okur, MarketData'yı yüklemez. Ölçeği bilmezlerse 252'ye düşer ve aynı
+    stratejinin Sharpe'ı leaderboard'da (1095 ile) başka, çoklu-test tablosunda
+    (252 ile) başka görünür. Tek kaynak burasıdır.
+    """
+    from data.synthetic import (
+        BARS_PER_YEAR_CRYPTO_8H, BARS_PER_YEAR_CRYPTO_DAILY,
+        BARS_PER_YEAR_EQUITY_DAILY,
+    )
+    config = config or {}
+    if config.get("source") != "binance":
+        return BARS_PER_YEAR_EQUITY_DAILY      # hisse/sentetik günlük
+    interval = str((config.get("binance") or {}).get("interval", "1d"))
+    return {"1d": BARS_PER_YEAR_CRYPTO_DAILY,
+            "8h": BARS_PER_YEAR_CRYPTO_8H}.get(interval, BARS_PER_YEAR_CRYPTO_DAILY)
+
+
 def make_adapter(config: dict) -> DataAdapter:
     """configs/data.yaml'a göre veri adaptörü kur."""
     config = config or {}

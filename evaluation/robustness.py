@@ -32,6 +32,11 @@ class RobustnessResult:
     param_min_sharpe: float        # perturbasyonlar arası en kötü Sharpe
     extra_delay_sharpe: float      # bir bar ek execution gecikmesiyle Sharpe
     robust: bool
+    #: NORMAL maliyetteki TÜM-SERİ Sharpe — cost2x/extra_delay ile ELMA-ELMA
+    #: karşılaştırma referansı. Gate'in Sharpe'ı fold ORTALAMASIdır ve buradan
+    #: farklıdır; raporda "0.93 -> -0.17" yazmak düşüşü olduğundan büyük
+    #: gösteriyordu (gerçek maliyet etkisi 0.77 -> -0.17).
+    base_sharpe: float = 0.0
 
 
 def _sharpe(net_pnl, bars_per_year: int = TRADING_DAYS) -> float:
@@ -112,4 +117,5 @@ def run_robustness(graph, hyp: HypothesisSpec, data: MarketData,
               and (extra_delay_sharpe > 0))
     return RobustnessResult(permutation_pvalue=perm_p, cost2x_sharpe=cost2x_sharpe,
                             param_min_sharpe=param_min,
-                            extra_delay_sharpe=extra_delay_sharpe, robust=robust)
+                            extra_delay_sharpe=extra_delay_sharpe, robust=robust,
+                            base_sharpe=real_sharpe)

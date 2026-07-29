@@ -55,8 +55,103 @@ def test_generate_dashboard():
         print("  [ok] dashboard tüm bölümlerle üretildi")
 
 
+def test_elle_sonda_kampanya_adayindan_ayrilir():
+    """Holdout audit'ine elle yazilmis sonda girerse BASLIK yaniltmamali.
+
+    Gercek olay: kilitli donem audit'ine kampanya disi 4 sonda girmisti ve
+    biri 'gecti'. Ayrim yapilmayinca dashboard "kilitli donemi 1/6 gecti"
+    diyordu — oysa gecen sey sistemin bulgusu degil, insanin elle denedigi
+    bir varyantti. Ayrim KANITA dayanir: hafizada kaydi olmayan kimlik
+    kampanya urunu degildir.
+    """
+    import sqlite3
+
+    from dashboard.report import _holdout_counts
+
+    with tempfile.TemporaryDirectory() as d:
+        mem = os.path.join(d, "mem.sqlite")
+        store = MemoryStore(mem)
+        res = BacktestResult(
+            hypothesis_id="hyp_d1",
+            per_fold_metrics=[FoldMetrics(fold_id="f0", split="research", sharpe=0.9,
+                                          annualized_return=0.11, volatility=0.12,
+                                          max_drawdown=0.15, turnover=40.0)],
+            net_returns=[0.001, -0.0005, 0.0012] * 90)
+        store.record(_hyp(), Decision(hypothesis_id="hyp_d1",
+                                      decision=DecisionType.accept,
+                                      source=DecisionSource.gate),
+                     "accepted", result=res)
+        store.close()
+
+        hold = os.path.join(d, "hold.sqlite")
+        c = sqlite3.connect(hold)
+        c.execute("CREATE TABLE holdout_access (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                  " hypothesis_id TEXT UNIQUE, sharpe REAL, passed INTEGER,"
+                  " accessed_at TEXT)")
+        c.executemany("INSERT INTO holdout_access (hypothesis_id, sharpe, passed) "
+                      "VALUES (?,?,?)",
+                      [("hyp_d1", -0.4, 0),          # kampanya adayi: KALDI
+                       ("probe_elle_1", 0.7, 1),     # elle sonda: gecti
+                       ("probe_elle_2", -0.2, 0)])
+        c.commit(); c.close()
+
+        gecen, aday, s_gecen, s_aday = _holdout_counts(hold, mem)
+        assert (gecen, aday) == (0, 1), f"kampanya sayimi yanlis: {gecen}/{aday}"
+        assert (s_gecen, s_aday) == (1, 2), f"sonda sayimi yanlis: {s_gecen}/{s_aday}"
+
+        out = generate_dashboard(mem, hold, os.path.join(d, "o.html"),
+                                 campaign_name="t")
+        html = open(out, encoding="utf-8").read()
+        assert "elle sonda" in html, "sonda etiketi HTML'de yok"
+        assert "sistemin bulgusu DEĞİLDİR" in html, "banner uyarisi yok"
+        assert "KİLİTLİ DÖNEMDE ÇÖKTÜ" in html,             "kampanya adaylarinin hepsi kaldi ama baslik bunu soylemiyor"
+        print("  [ok] elle sonda ayrildi: kampanya 0/1, sonda 1/2 — baslik dogru")
+
+
+def test_hafiza_yoksa_ayrim_yapilmaz_ama_patlamaz():
+    """Hafiza verilmezse (eski cagri) hepsi kampanya sayilir; cokme olmaz."""
+    import sqlite3
+
+    from dashboard.report import _holdout_counts
+    with tempfile.TemporaryDirectory() as d:
+        hold = os.path.join(d, "h.sqlite")
+        c = sqlite3.connect(hold)
+        c.execute("CREATE TABLE holdout_access (hypothesis_id TEXT, passed INTEGER)")
+        c.execute("INSERT INTO holdout_access VALUES ('x', 1)")
+        c.commit(); c.close()
+        assert _holdout_counts(hold, None) == (1, 1, 0, 0)
+        assert _holdout_counts(os.path.join(d, "yok.sqlite")) == (0, 0, 0, 0)
+        print("  [ok] hafizasiz/dosyasiz cagri guvenli")
+
+
+def test_metriksiz_kabul_dashboardu_cokertmez():
+    """sharpe=None olan bir kabul kaydi TUM dashboard'i cokertmemeli.
+
+    Gercek hata: _details, 'Sharpe {sharpe:.2f}' biciminde yaziyordu; metrigi
+    olmayan tek bir kabul kaydi (geriye-donuk kayit / backfill sirasi / elle
+    ekleme) TypeError firlatip dashboard.html'in TAMAMINI uretilemez yapiyordu.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        mem = os.path.join(d, "m.sqlite")
+        store = MemoryStore(mem)
+        store.record(_hyp(), Decision(hypothesis_id="hyp_d1",
+                                      decision=DecisionType.accept,
+                                      source=DecisionSource.gate),
+                     "accepted")                      # result YOK -> sharpe None
+        store.close()
+        out = generate_dashboard(mem, os.path.join(d, "yok.sqlite"),
+                                 os.path.join(d, "o.html"), campaign_name="t")
+        html = open(out, encoding="utf-8").read()
+        assert "Sharpe —" in html, "eksik metrik icin nazik gosterim yok"
+        assert "hyp_d1" in html
+        print("  [ok] metriksiz kabul: dashboard cokmedi, 'Sharpe —' basildi")
+
+
 def main():
     test_generate_dashboard()
+    test_metriksiz_kabul_dashboardu_cokertmez()
+    test_elle_sonda_kampanya_adayindan_ayrilir()
+    test_hafiza_yoksa_ayrim_yapilmaz_ama_patlamaz()
     print("OK — dashboard testi geçti.")
 
 

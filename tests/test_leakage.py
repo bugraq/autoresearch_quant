@@ -171,6 +171,56 @@ def test_excessive_complexity_rejected():
     print("  [ok] aşırı karmaşık strateji reddedildi")
 
 
+# ---------------------------------------------------------------------------
+# MODEL MODU — feature'lar da denetlenmeli (kapatilan acik)
+# ---------------------------------------------------------------------------
+# Acik neydi: model modunda strateji sinyali, sinyal IFADESINDEN degil modelin
+# BUTUN feature'lardan urettigi tahminden gelir. Validator yalnizca signal
+# dugumunun tick'ine bakiyordu; sinyal ifadesinin ATIF YAPMADIGI bir feature
+# gec bilgi (close_t) tasiyip modele X olarak girebiliyor, islem de close_t'de
+# yapilabiliyordu = klasik ayni-bar sizintisi, "TEMIZ" damgasiyla.
+
+
+def _iki_featurelu(model_type: str, trade_time: str) -> HypothesisSpec:
+    """features=[open_t (guvenli), close_t (gec)]; sinyal SADECE guvenliye atif yapar."""
+    from contracts.dsl import NamedFeature
+    from contracts.hypothesis_spec import ModelSpec
+    guvenli = NamedFeature(name="guvenli", expression=Expression(
+        op="return", window=5, inputs=[Expression(op="field", field="open")]))
+    gec = NamedFeature(name="gec_close", expression=Expression(
+        op="return", window=1, inputs=[Expression(op="field", field="close")]))
+    h = _hyp(_cs_rank_of(Expression(op="feature_ref", name="guvenli")),
+             trade_time=trade_time, features=[guvenli, gec])
+    h.model = ModelSpec(type=model_type)
+    return h
+
+
+def test_model_modunda_gizli_gec_feature_yakalanir():
+    h = _iki_featurelu("random_forest", "close_t")
+    dec = validate(compile_hypothesis(h), h)
+    assert dec.decision != DecisionType.accept,         "Model modunda close_t feature'i + close_t islemi KABUL edildi (sizinti acigi geri geldi)"
+    sizinti = [i for i in dec.issues if i.type == "temporal_leakage"]
+    assert sizinti, f"temporal_leakage bulunamadi: {[i.type for i in dec.issues]}"
+    assert "gec_close" in " ".join(i.description for i in sizinti),         "Hangi feature'in sizdirdigi soylenmiyor"
+    print("  [ok] model modu: sinyalde GORUNMEYEN close_t feature'i yakalandi")
+
+
+def test_model_modunda_bir_bar_sonra_islem_guvenli():
+    """Yanlis pozitif olmamali: islem bir bar sonraysa close_t feature serbest."""
+    h = _iki_featurelu("random_forest", "open_t_plus_1")
+    dec = validate(compile_hypothesis(h), h)
+    assert dec.decision == DecisionType.accept,         f"gecerli model stratejisi reddedildi: {[i.type for i in dec.issues]}"
+    print("  [ok] model modu: open_t+1 islemi ile close_t feature GUVENLI")
+
+
+def test_dsl_formul_modunda_kullanilmayan_feature_sorun_degil():
+    """dsl_formula'da model yok; sinyal agacinda olmayan feature hicbir seye girmez."""
+    h = _iki_featurelu("dsl_formula", "close_t")
+    dec = validate(compile_hypothesis(h), h)
+    assert dec.decision == DecisionType.accept,         f"dsl_formula modunda yanlis pozitif: {[i.type for i in dec.issues]}"
+    print("  [ok] dsl_formula: kullanilmayan feature yanlis alarm uretmiyor")
+
+
 def main():
     test_valid_strategy_accepted()
     test_funding_rate_same_bar_execution_leak()
@@ -184,6 +234,9 @@ def main():
     test_disallowed_field_rejected()
     test_degenerate_conditional_rejected()
     test_excessive_complexity_rejected()
+    test_model_modunda_gizli_gec_feature_yakalanir()
+    test_model_modunda_bir_bar_sonra_islem_guvenli()
+    test_dsl_formul_modunda_kullanilmayan_feature_sorun_degil()
     print("OK — tüm sızıntı/geçerlilik testleri geçti.")
 
 

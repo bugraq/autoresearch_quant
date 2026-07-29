@@ -11,6 +11,15 @@ bilindiği için servislerin GERÇEKTEN çalıştığı doğrulanabilir.
 """
 from __future__ import annotations
 
+import sys
+
+# Windows konsolu (cp1254) "→ × √" gibi karakterlerde UnicodeEncodeError
+# ile PATLAR (bu betik hocaya canli gosteriliyor). main.py'deki korumanin aynisi.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 from contracts.hypothesis_spec import HypothesisSpec
 from data.synthetic import gen_interaction_alpha
 

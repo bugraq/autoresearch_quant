@@ -162,3 +162,18 @@ def print_report(rows: list[ReportRow], n_trials: int) -> None:
           "korelasyonlu oldukları için bağımsız deneme sayılmaz — Doküman 10.1)")
     if dead_param:
         print("  (xN = N deneme BİREBİR aynı getiriyi üretti -> ÖLÜ PARAMETRE)")
+
+    # SADE ÇEVİRİ — bu tablo jargonun en yoğun olduğu yer; okumayı bilmeyen
+    # "GEÇTİ yok" satırını "sistem çalışmıyor" sanıyor. Bir cümlede ne olduğu.
+    gecen = sum(1 for r in rows if r.survives_fdr)
+    print("\n  BU TABLO NE DİYOR? (sade)")
+    print("    Çok sayıda fikir denenince içlerinden biri sırf ŞANSLA parlak")
+    print("    görünür — 100 kez yazı-tura atıp 8 kez üst üste tura gelmesi gibi.")
+    print(f"    Burada {n_trials} deneme yapıldı. Bu tablo her fikre soruyor:")
+    print('    "bu kadar deneme yapıldığını bilerek, hâlâ inanıyor muyuz?"')
+    if gecen:
+        print(f"    -> {gecen} fikir bu süzgeci GEÇTİ (şansla açıklanamıyor).")
+    else:
+        print("    -> HİÇBİRİ geçemedi: elimizdeki en iyi sonuç bile,")
+        print("       bu kadar deneme sonrası tesadüf olarak açıklanabilir.")
+        print("       Bu bir arıza değil; sistemin kendini kandırmayı reddetmesidir.")

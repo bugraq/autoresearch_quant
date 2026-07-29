@@ -117,7 +117,114 @@ def _backfill_audits(memory: MemoryStore, data, cfg: CampaignConfig) -> None:
         print(f"[reviewer] {done} eski kabule Backtest Auditor raporu geriye-dolduruldu.")
 
 
-def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data) -> None:
+# Eleme aşamalarının trader diline çevirisi (teknik stage adı -> ne oldu).
+_ELEME_TR = {
+    "compile_error":         "kural dışı yazılmıştı (bilgisayar çeviremedi)",
+    "static_rejected":       "GELECEĞE BAKIYORDU (sızıntı) — testten önce eledik",
+    "critic_rejected":       "ekonomik gerekçesi tutmadı (bağımsız denetçi eledi)",
+    "duplicate":             "aynı fikrin tekrarıydı (daha önce denenmişti)",
+    "low_originality":       "mevcut bir fikre çok benziyordu (yeniden istendi)",
+    "degenerate_conditional": "koşulu boşa çalışıyordu (kural fiilen ölüydü)",
+    "gate_rejected":         "geçmişte para kazandırmadı (eşiği geçemedi)",
+    "robustness_rejected":   "kırılgandı (masraf 2x / parametre oynayınca çöktü)",
+    "parameter_search":      "parametre arama denemesi (ayrı fikir değil)",
+    "accepted":              "GEÇTİ",
+}
+
+
+def print_trader_summary(memory: MemoryStore, rows, cfg: CampaignConfig) -> None:
+    """TEKNİK TERİM İÇERMEYEN kampanya özeti.
+
+    Hedef okur: ML/ajan bilmeyen, sadece alım-satım bilen biri. Kural — basılan
+    her sayının yanında "bu ne demek" ve "iyi mi kötü mü" olmalı; para kaybı
+    asla süslenmemeli (bkz. evaluation/plain.py dürüstlük kuralı).
+    """
+    from evaluation.plain import (
+        durust_hukum, sozluk_blogu, strateji_karnesi,
+    )
+
+    stages = memory.stage_counts()
+    kabul = memory.accepted_full()          # (hid, title, sharpe, dd, turnover, returns)
+    toplam = memory.total_experiments()
+    # Parametre aramaları ayrı FİKİR değil; "kaç fikir denendi" sayısına girmez.
+    fikir_sayisi = toplam - stages.get("parameter_search", 0)
+
+    print("\n" + "=" * 74)
+    print("  TRADER ÖZETİ — teknik terim yok")
+    print("=" * 74)
+
+    print(f"\n  NE YAPTIK?")
+    print(f"    Bilgisayar {fikir_sayisi} tane alım-satım fikri üretti ve her birini")
+    print(f"    geçmiş veride, işlem masrafı düşülerek parayla denedi.")
+    print(f"    {len(kabul)} tanesi bütün elemeleri geçti.")
+
+    print(f"\n  FİKİRLER NEREDE ELENDİ?")
+    # Elenenler önce (çoktan aza), GEÇTİ en sonda — huni yukarıdan aşağı okunur.
+    for stage, n in sorted(stages.items(),
+                           key=lambda kv: (kv[0] == "accepted", -kv[1])):
+        if stage == "parameter_search":
+            continue
+        print(f"    {n:4d}  {_ELEME_TR.get(stage, stage)}")
+    if stages.get("parameter_search"):
+        print(f"    ({stages['parameter_search']} ek deneme: kabul edilen fikirlerin "
+              f"ayar araması —\n     ayrı fikir sayılmaz ama şans hesabına katılır.)")
+
+    if not kabul:
+        print("\n  SONUÇ: Hiçbir fikir elemeleri geçemedi.")
+        print("    Bu bir arıza DEĞİL. Sistem, para kazandırmayan fikirleri")
+        print("    kabul etmemek için kurulmuştur. 'Bulamadık' demek,")
+        print("    olmayan bir şeyi 'bulduk' demekten çok daha değerlidir.")
+        print("=" * 74 + "\n")
+        return
+
+    print(f"\n  ELEMELERİ GEÇENLER")
+    dsr_ile = {r.hypothesis_id: r for r in rows}
+    for hid, title, sharpe, dd, turn, rets in kabul:
+        toplam_getiri = None
+        if rets:
+            birikim = 1.0
+            for x in rets:
+                birikim *= (1.0 + x)
+            toplam_getiri = birikim - 1.0
+        print(f"\n    [{hid}] {title[:66]}")
+        print(strateji_karnesi(sharpe=sharpe, max_dd=dd, turnover=turn,
+                               toplam=toplam_getiri, girinti="      "))
+        r = dsr_ile.get(hid)
+        if r is not None:
+            from evaluation.plain import esik_yorumu
+            print(f"      {'şans elemesi notu':<24s} {r.dsr:>10.2f}   "
+                  f"{esik_yorumu('dsr', r.dsr)}")
+            if not r.survives_fdr:
+                print("        -> UYARI: bu kadar çok fikir denendiği için bu "
+                      "sonuç tesadüf\n           olabilir; istatistik onaylamadı.")
+
+    # DÜRÜST HÜKÜM — en iyi kabulün parasına bakarak
+    en_iyi = max(kabul, key=lambda k: (k[2] or -99))
+    rets = en_iyi[5] or []
+    tg = None
+    if rets:
+        b = 1.0
+        for x in rets:
+            b *= (1.0 + x)
+        tg = b - 1.0
+    # Çoklu-test süzgecini HİÇ kimse geçmediyse hüküm aşağı çekilir — aynı
+    # çıktının iki yeri farklı şey söylemesin.
+    fdr_gecti = any(r.survives_fdr for r in rows) if rows else None
+    baslik, gerekce = durust_hukum(tg, en_iyi[2], fdr_gecti=fdr_gecti)
+    print(f"\n  HÜKÜM (en iyi fikir için): {baslik}")
+    for satir in gerekce:
+        from evaluation.plain import _sar
+        for parca in _sar(satir, 68):
+            print(f"    {parca}")
+
+    print()
+    print(sozluk_blogu(["sharpe", "max_drawdown", "turnover", "dsr", "holdout"],
+                       girinti="  "))
+    print("=" * 74 + "\n")
+
+
+def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
+                     research_data=None, invalidate_reason: "str | None" = None) -> None:
     """--holdout: hafızadaki kabul edilmiş adayları kilitli dönemde sına.
 
     LLM'siz, deterministik son sınav. One-shot: aynı aday ikinci kez
@@ -135,11 +242,31 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data) -> None:
         memory.close()
         return
 
+    # ISINMA: araştırma dilimi GEÇMİŞ olarak verilir — rolling pencereler ve
+    # walk-forward ML modeli kilitli dönemin başında sıfırdan başlamaz, model
+    # holdout'un içinde YENİDEN EĞİTİLMEZ. Bilgi akışı tek yönlü (geçmiş->gelecek).
     holdout = HoldoutService(holdout_data, audit_path=HOLDOUT_DB,
                              max_candidates=max_cand,
                              min_sharpe=cfg.min_acceptance_sharpe,
-                             cost_bps=cfg.cost_bps)
+                             cost_bps=cfg.cost_bps,
+                             history=research_data)
+    # GEÇERSİZ KILMA (istenmişse) — değerlendirmeden ÖNCE, gerekçeyle, silmeden.
+    if invalidate_reason:
+        n = holdout.invalidate(invalidate_reason)
+        print(f"\n[geçersiz kılma] {n} kilitli-dönem kaydı GEÇERSİZ işaretlendi "
+              f"(silinmedi; gerekçe audit'te kalıcı).")
+        print(f"  Gerekçe: {invalidate_reason}")
+        print("  Bu kayıtlar artık kotayı doldurmuyor ve yeniden "
+              "değerlendirilebilir.\n")
+
     print(f"=== HOLDOUT (kilitli dönem, one-shot, {len(candidates)} aday) ===")
+    print("  Bu, fikirlerin geliştirilirken HİÇ görmediği bir dönem. Öğrenciye")
+    print("  sınav sorusunu önceden vermemek gibi — gerçek not buradan çıkar.")
+    print("  Her aday YALNIZCA BİR KEZ sınanır; sonuca bakıp fikri düzeltmek")
+    print("  yasaktır (yoksa kilitli dönem de araştırma verisine dönüşür).\n")
+    if research_data is None:
+        print("  UYARI: geçmiş verilmedi — kilitli dönemin başı ısınmayla harcanır.")
+    sonuclar = []
     for hid, hjson, research_sharpe in candidates:
         hyp = HypothesisSpec.model_validate_json(hjson)
         try:
@@ -148,13 +275,35 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data) -> None:
             print(f"  {hid}  atlandı: {e}")
             continue
         flag = "GEÇTİ" if res.passed else "KALDI"
+        cov = (f"  kapsama=%{res.coverage*100:.0f}" if res.coverage < 0.995 else "")
         print(f"  {hid}  araştırma Sharpe={research_sharpe:.2f} -> "
-              f"holdout Sharpe={res.sharpe:.2f}  [{flag}]")
+              f"holdout Sharpe={res.sharpe:.2f}  [{flag}]{cov}")
+        sonuclar.append((hid, research_sharpe, res.sharpe, res.passed))
+
+    if sonuclar:
+        gecen = sum(1 for *_x, p in sonuclar if p)
+        print("\n  SADE OKUMA:")
+        if gecen == 0:
+            print("    Hiçbir fikir kilitli dönemde ayakta kalmadı. Araştırma")
+            print("    döneminde iyi görünen sonuçlar, yeni veride tekrarlanmadı —")
+            print("    yani o kazançlar gerçek bir kural değil, geçmişe uydurulmuş")
+            print("    desenlerdi. Sistemin işi tam olarak bunu yakalamaktı.")
+        else:
+            print(f"    {gecen}/{len(sonuclar)} fikir hiç görmediği dönemde de")
+            print("    ayakta kaldı. Bu, ciddiye alınacak bir işarettir — ama")
+            print("    tek bir dönemdir; canlı takip (ileri-test) hâlâ gerekir.")
+        dusenler = [(h, a, b) for h, a, b, p in sonuclar if a > 0 and b < a - 0.3]
+        if dusenler:
+            print("\n    Araştırmada iyi görünüp kilitli dönemde düşenler:")
+            for h, a, b in dusenler:
+                print(f"      {h}: {a:+.2f} -> {b:+.2f}  "
+                      f"(fark {b-a:+.2f} = geçmişe aşırı uyum işareti)")
     holdout.close()
     memory.close()
 
     out = generate_dashboard(DB_PATH, HOLDOUT_DB, os.path.join(HERE, "dashboard.html"),
-                             campaign_name=campaign["name"])
+                             campaign_name=campaign["name"],
+                             bars_per_year=holdout_data.bars_per_year)
     print(f"\nDashboard: {out}")
 
 
@@ -175,6 +324,11 @@ def main() -> None:
     parser.add_argument("--live", action="store_true",
                         help="Canlı ajan terminali: kampanyayı gerçek zamanlı panelde "
                              "izle (rich TUI). Mantık değişmez, yalnızca görünüm.")
+    parser.add_argument("--holdout-invalidate", metavar="GEREKÇE",
+                        help="Mevcut kilitli-dönem sonuçlarını GEÇERSİZ kıl "
+                             "(silmez; gerekçe+tarihle audit'e yazar) ve yeniden "
+                             "değerlendirmeye izin ver. YALNIZCA değerlendirici "
+                             "hatalıysa meşrudur — sonucu beğenmediğin için DEĞİL.")
     parser.add_argument("--detay", action="store_true",
                         help="DETAYLI çıktı: her deneyin her adımı (üretim, derleme, "
                              "sızıntı, sinyal, backtest fold'ları, gate) tek tek basılır.")
@@ -193,7 +347,8 @@ def main() -> None:
     data, holdout_data = load_data(campaign, data_cfg, cfg.research_fraction)
 
     if args.holdout:
-        run_holdout_mode(campaign, cfg, holdout_data)
+        run_holdout_mode(campaign, cfg, holdout_data, research_data=data,
+                         invalidate_reason=args.holdout_invalidate)
         return
 
     # ---- Kampanya modu (holdout'a DOKUNULMAZ) ----
@@ -277,8 +432,15 @@ def main() -> None:
 
     # Multiple testing raporu — "kabul" != "istatistiksel geçerli"
     backtested = memory.backtested_experiments()
-    rows = build_report(backtested)
+    # YILLIKLAŞTIRMA ÖLÇEĞİ VERİDEN: aksi halde bu tablo 252 varsayar ve aynı
+    # stratejinin Sharpe'ı leaderboard'dakinden (8h kripto: 1095) ~2x farklı
+    # görünür. DSR/FDR bundan etkilenmez (per-period), ann_sharpe ve CI etkilenir.
+    rows = build_report(backtested, bars_per_year=data.bars_per_year)
     print_report(rows, n_trials=len(backtested))
+
+    # SADE ÖZET EN SONA: teknik tablolardan sonra, herkesin okuyabileceği
+    # dilde toparlama. Teknik çıktı kaldırılmadı — üstüne bir katman eklendi.
+    print_trader_summary(memory, rows, cfg)
 
     # Holdout BİLEREK burada koşulmaz (Doküman 10.3): her koşuda otomatik
     # tüketilseydi kilitli dönem fiilen araştırma verisine dönerdi.
@@ -297,7 +459,8 @@ def main() -> None:
 
     # Research dashboard (tek dosya, offline) — hocaya göstermek için
     out = generate_dashboard(DB_PATH, HOLDOUT_DB, os.path.join(HERE, "dashboard.html"),
-                             campaign_name=campaign["name"])
+                             campaign_name=campaign["name"],
+                             bars_per_year=data.bars_per_year)
     print(f"\nDashboard: {out}")
 
 

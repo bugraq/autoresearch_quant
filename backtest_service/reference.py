@@ -60,5 +60,11 @@ def reference_backtest(signal: pd.DataFrame, data, long_q: float = 0.2,
     cost = turnover.shift(2) * (cost_bps / 1e4)
     net = (gross_pnl - cost).dropna()
 
-    sharpe = float(net.mean() / net.std() * np.sqrt(252)) if net.std() > 0 else 0.0
+    # YILLIKLAŞTIRMA ÖLÇEĞİ VERİDEN. Sabit 252 yazmak bu referansı kriptoda
+    # (günlük 365 / 8h 1095) motorla ELMA-ARMUT yapardı: çapraz-doğrulama
+    # "fark 0.00" demek yerine sahte bir sapma gösterir, ya da daha kötüsü,
+    # sapmayı motorun hatası sanardık. Referansın işi motoru denetlemek;
+    # denetçinin cetveli de doğru olmalı.
+    bpy = int(getattr(data, "bars_per_year", 252))
+    sharpe = float(net.mean() / net.std() * np.sqrt(bpy)) if net.std() > 0 else 0.0
     return sharpe, net

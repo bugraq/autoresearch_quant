@@ -183,6 +183,35 @@ def validate(graph: StrategyGraph, hyp: HypothesisSpec,
                     f"anında; bilgi işlemden önce bilinmiyor."),
                 required_action="İşlemi en az bir bar sonraya kaydır (örn. open_t_plus_1)."))
 
+        # --- 2a) MODEL MODU: FEATURE'LARIN DA denetlenmesi (kapatılan açık) ---
+        # Model modunda (model.type != dsl_formula) strateji sinyali, sinyal
+        # ifadesinden DEĞİL modelin TÜM feature'lardan ürettiği tahminden gelir.
+        # Yalnızca signal düğümünün tick'ine bakmak sömürülebilir bir açıktı:
+        #   features = [f0: open_t, f1: close_t], signal = rank(f0)  -> tick 0
+        #   trade_time = close_t (tick 1)  -> 0 < 1 ✓ "TEMİZ" görünüyordu,
+        # oysa f1 (close_t) modele X olarak giriyor ve close_t'de işlem yapılıyor
+        # = klasik aynı-bar sızıntısı. Model modunda ETKİN bilgi anı, sinyal ile
+        # BÜTÜN feature'ların en GEÇ olanıdır.
+        if trade_tick is not None and hyp.model.type != "dsl_formula":
+            for ad, nid in graph.feature_node_ids.items():
+                fnode = nodes.get(nid)
+                if fnode is None:
+                    continue
+                ftick = int(fnode.params.get("_info_tick", 0))
+                if ftick < trade_tick:
+                    continue
+                leak = True
+                issues.append(Issue(
+                    type="temporal_leakage",
+                    description=(
+                        f"'{ad}' özelliği {tick_to_label(ftick)} bilgisine dayanıyor "
+                        f"ve MODELE girdi olarak veriliyor; işlem ise "
+                        f"{hyp.execution.trade_time} ({tick_to_label(trade_tick)}) "
+                        f"anında. Sinyal ifadesi bu özelliğe atıf yapmasa bile model "
+                        f"onu kullanır — bilgi işlem anında henüz bilinmiyor."),
+                    required_action=("İşlemi en az bir bar sonraya kaydır "
+                                     "(örn. open_t_plus_1) ya da bu özelliği çıkar.")))
+
     # --- 2b) Dejenere koşul: iki dalı aynı conditional = sahte koşullama ---
     for nid in _find_degenerate_conditionals(nodes):
         issues.append(Issue(

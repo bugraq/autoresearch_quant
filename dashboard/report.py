@@ -100,25 +100,163 @@ def _section(title: str, desc: str, body: str) -> str:
     return f'<section><h2>{_esc(title)}</h2><div class="desc">{_esc(desc)}</div>{body}</section>'
 
 
-def _holdout_counts(holdout_db: str) -> tuple[int, int]:
+def _aktif_kosul(conn) -> str:
+    """status sütunu varsa 'yalnız aktif' kosulu; yoksa (eski audit) bos.
+
+    Geçersiz kılınmış kayıtlar audit'te DURUR (silinmez) ama sonuç
+    tablolarında aktif sonuçla aynı kefeye konmaz — yoksa aynı hipotez iki
+    kez, iki farklı Sharpe'la listelenir ve hangisi geçerli belli olmaz.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(holdout_access)")}
+    return " WHERE status='active'" if "status" in cols else ""
+
+
+def _kampanya_adaylari(memory_db: "str | None") -> "set[str] | None":
+    """Hafızadaki hipotez kimlikleri. None = hafıza yok (ayrım yapılamaz)."""
+    if not memory_db or not os.path.exists(memory_db):
+        return None
+    conn = sqlite3.connect(memory_db)
+    try:
+        return {h for (h,) in _q(conn, "SELECT DISTINCT hypothesis_id FROM experiment")}
+    finally:
+        conn.close()
+
+
+def _holdout_counts(holdout_db: str, memory_db: "str | None" = None) -> tuple:
+    """(gecen, aday, sondaj_gecen, sondaj_aday) — KAMPANYA adayı vs ELLE SONDAJ.
+
+    Neden ayrım şart: holdout audit'ine kampanya dışı, elle yazılmış sondalar
+    da girebiliyor (gerçekten girdi). Bunları kampanya sonucuyla aynı kefeye
+    koymak başlığı yanıltır: "kilitli dönemi 1/6 geçti" cümlesindeki 1, sistemin
+    BULDUĞU bir strateji değil, insanın elle denediği bir varyant olabilir.
+    Ayrım kanıta dayanır: hafızada kaydı olmayan kimlik = kampanya ürünü değil.
+    """
     if not os.path.exists(holdout_db):
-        return (0, 0)
+        return (0, 0, 0, 0)
     conn = sqlite3.connect(holdout_db)
-    rows = _q(conn, "SELECT passed FROM holdout_access")
+    rows = _q(conn, "SELECT hypothesis_id, passed FROM holdout_access"
+                    + _aktif_kosul(conn))
     conn.close()
-    return (sum(1 for (p,) in rows if p), len(rows))
+    bilinen = _kampanya_adaylari(memory_db)
+    if bilinen is None:                       # ayrım yapılamıyor: hepsi kampanya
+        return (sum(1 for _h, p in rows if p), len(rows), 0, 0)
+    kamp = [(h, p) for h, p in rows if h in bilinen]
+    sondaj = [(h, p) for h, p in rows if h not in bilinen]
+    return (sum(1 for _h, p in kamp if p), len(kamp),
+            sum(1 for _h, p in sondaj if p), len(sondaj))
 
 
-def _banner(conn, holdout_db: str) -> str:
+def _banner(conn, holdout_db: str, memory_db: "str | None" = None) -> str:
     total = _q(conn, "SELECT COUNT(*) FROM experiment")[0][0]
     acc = _q(conn, "SELECT COUNT(*) FROM experiment WHERE decision='accept'")[0][0]
-    passed, cand = _holdout_counts(holdout_db)
+    passed, cand, s_pass, s_cand = _holdout_counts(holdout_db, memory_db)
     hold_txt = (f"bunlardan <span class='hl'>{passed}</span> tanesi kilitli holdout "
                 f"dönemini geçti" if cand else "holdout değerlendirmesi henüz yapılmadı")
+    if s_cand:
+        hold_txt += (f" (ayrıca kampanya dışı, elle denenmiş {s_cand} sonda kilitli "
+                     f"dönemde çalıştırılmış; {s_pass} tanesi geçmiş — bunlar sistemin "
+                     f"bulgusu DEĞİLDİR)")
     return (f'<div class="banner">Bu kampanyada LLM otonom olarak '
             f'<b>{total}</b> hipotez üretip test etti; '
             f'<span class="hl">{acc}</span> tanesi tüm süzgeçlerden geçip kabul edildi, '
             f'{hold_txt}. Aşağıdaki her bölüm sürecin bir yönünü gösterir.</div>')
+
+
+def _trader_ozeti(memory_db: str, holdout_db: str, bars_per_year: int) -> str:
+    """EN ÜSTTEKİ SADE PANEL — teknik terim bilmeyen için tek bakışta hüküm.
+
+    Aşağıdaki teknik bölümler duruyor; bu onların yerine değil, ÖNÜNE geçer.
+    Panelin işi tek soruyu cevaplamak: "sonuç ne, paraya ne oldu?"
+    """
+    from evaluation.plain import TERIMLER, durust_hukum, esik_yorumu, para_dili
+
+    store = MemoryStore(memory_db)
+    kabul = store.accepted_full()      # (hid, title, sharpe, dd, turnover, returns)
+    rows = build_report(store.backtested_experiments(), bars_per_year=bars_per_year)
+    stages = store.stage_counts()
+    toplam = store.total_experiments()
+    store.close()
+    fikir = toplam - stages.get("parameter_search", 0)
+    _passed, cand, _s_pass, _s_cand = _holdout_counts(holdout_db, memory_db)
+
+    if not kabul:
+        return ('<div class="card"><p><b>SONUÇ: hiçbir fikir elemeleri geçemedi.</b></p>'
+                f'<p class="desc">Bilgisayar {fikir} alım-satım fikri üretip her birini '
+                'geçmiş veride, işlem masrafı düşülerek denedi; hiçbiri eşikleri '
+                'aşamadı. Bu bir arıza değildir — sistem, para kazandırmayan fikirleri '
+                'kabul etmemek için kurulmuştur. Olmayan bir şeyi “bulduk” demektense '
+                '“bulamadık” demek çok daha değerlidir.</p></div>')
+
+    def _toplam_getiri(rets):
+        if not rets:
+            return None
+        b = 1.0
+        for x in rets:
+            b *= (1.0 + x)
+        return b - 1.0
+
+    en_iyi = max(kabul, key=lambda k: (k[2] or -99))
+    tg = _toplam_getiri(en_iyi[5])
+    fdr_gecti = any(r.survives_fdr for r in rows) if rows else None
+    baslik, gerekce = durust_hukum(tg, en_iyi[2], fdr_gecti=fdr_gecti)
+    renk = "bad" if ("KAZANDIRMADI" in baslik or "ZAYIF" in baslik) else "warn"
+    if baslik.startswith("UMUT"):
+        renk = "good"
+
+    satirlar = []
+    for hid, title, sharpe, dd, turn, rets in kabul[:5]:
+        t = _toplam_getiri(rets)
+        satirlar.append(
+            f"<tr><td>{_esc(hid)}</td><td>{_esc(title[:54])}</td>"
+            f'<td class="num">{sharpe:+.2f}</td>'
+            f'<td>{_esc(esik_yorumu("sharpe", sharpe))}</td>'
+            f'<td class="num">{("%%%+.0f" % (t*100)) if t is not None else "–"}</td>'
+            f'<td class="num">%{(dd or 0)*100:.0f}</td>'
+            f'<td>{_esc(esik_yorumu("max_drawdown", dd or 0))}</td></tr>')
+
+    sozluk = "".join(
+        f"<li><b>{_esc(ad)}</b> — {_esc(acik)}</li>"
+        for k, (ad, acik) in TERIMLER.items()
+        if k in ("sharpe", "max_drawdown", "turnover", "dsr", "holdout"))
+
+    # KİLİTLİ DÖNEM SONUCU VARSA O ESASTIR — araştırma dönemindeki kazanç,
+    # fikrin geliştirildiği veriden çıkar; asıl not hiç görülmemiş dönemden.
+    if not cand:
+        holdout_not = ('<p class="desc"><b>Kilitli dönem sınavı henüz yapılmadı.</b> '
+                       'Yukarıdaki sayılar, fikirlerin GELİŞTİRİLDİĞİ dönemden çıktı — '
+                       'yani öğrencinin kendi çalıştığı sorulardan aldığı not. Gerçek '
+                       'not için: <code>python main.py --holdout</code></p>')
+    elif _passed == 0:
+        renk = "bad"
+        baslik = "KİLİTLİ DÖNEMDE ÇÖKTÜ"
+        holdout_not = (f'<p class="desc"><b>ASIL SONUÇ BU:</b> {cand} aday hiç '
+                       'görmediği kilitli dönemde sınandı ve <b>hiçbiri ayakta '
+                       'kalmadı</b>. Yukarıdaki kazançlar, fikirlerin geliştirildiği '
+                       'dönemde geçerliydi; yeni veride tekrarlanmadı. Yani bunlar '
+                       'gerçek bir piyasa kuralı değil, geçmişe uydurulmuş '
+                       'desenlerdi — sistemin işi tam olarak bunu yakalamaktı.</p>')
+    else:
+        renk = "good"
+        baslik = f"KİLİTLİ DÖNEMİ {_passed}/{cand} GEÇTİ"
+        holdout_not = (f'<p class="desc"><b>ASIL SONUÇ BU:</b> {cand} adaydan '
+                       f'<b>{_passed}</b> tanesi hiç görmediği kilitli dönemde de '
+                       'ayakta kaldı. Ciddiye alınacak bir işaret — ama tek bir '
+                       'dönemdir; canlı takip (ileri-test) hâlâ gerekir.</p>')
+
+    return (
+        f'<div class="card">'
+        f'<p><span class="pill {renk}">{_esc(baslik)}</span></p>'
+        f'<p class="desc">Bilgisayar <b>{fikir}</b> alım-satım fikri üretti, her birini '
+        f'geçmiş veride işlem masrafı düşerek denedi; <b>{len(kabul)}</b> tanesi bütün '
+        f'elemeleri geçti.</p>'
+        + "".join(f'<p class="desc">{_esc(g)}</p>' for g in gerekce)
+        + (f'<p class="desc">Somut olarak: {_esc(para_dili(tg))}.</p>' if tg is not None else "")
+        + '<table><tr><th>Kimlik</th><th>Strateji</th><th>Risk başına kazanç</th>'
+          '<th></th><th>Toplam getiri</th><th>En dip kayıp</th><th></th></tr>'
+        + "".join(satirlar) + "</table>"
+        + holdout_not
+        + f'<p class="desc">Terimler:</p><ul class="desc">{sozluk}</ul>'
+        + "</div>")
 
 
 def _tiles(conn, memory_db: str) -> str:
@@ -195,9 +333,9 @@ def _leaderboard(conn) -> str:
             'getiri (yüksek iyi). Bunlar araştırma dönemi; kesin yargı holdout.</div>')
 
 
-def _multiple_testing(memory_db: str) -> str:
+def _multiple_testing(memory_db: str, bars_per_year: int = 252) -> str:
     store = MemoryStore(memory_db)
-    rows = build_report(store.backtested_experiments())
+    rows = build_report(store.backtested_experiments(), bars_per_year=bars_per_year)
     store.close()
     if not rows:
         return '<div class="card desc">Backtest edilen deney yok.</div>'
@@ -250,12 +388,17 @@ def _pareto(memory_db: str) -> str:
             'Pareto-optimal = hiçbir stratejiye tüm boyutlarda yenik düşmeyen.</div>')
 
 
-def _holdout(holdout_db: str) -> str:
+def _holdout(holdout_db: str, memory_db: "str | None" = None) -> str:
     if not os.path.exists(holdout_db):
         return '<div class="card desc">Holdout değerlendirmesi yapılmadı.</div>'
     conn = sqlite3.connect(holdout_db)
-    rows = _q(conn, "SELECT hypothesis_id, sharpe, passed FROM holdout_access ORDER BY sharpe DESC")
+    rows = _q(conn, "SELECT hypothesis_id, sharpe, passed FROM holdout_access"
+                    + _aktif_kosul(conn) + " ORDER BY sharpe DESC")
+    gecersiz = _q(conn, "SELECT hypothesis_id, sharpe, invalidation_reason "
+                        "FROM holdout_access WHERE status='invalidated' "
+                        "ORDER BY id") if _aktif_kosul(conn) else []
     conn.close()
+    bilinen = _kampanya_adaylari(memory_db)
     if not rows:
         return '<div class="card desc">Holdout adayı yok.</div>'
 
@@ -263,11 +406,39 @@ def _holdout(holdout_db: str) -> str:
         return ('<span class="pill good">GEÇTİ</span>' if passed
                 else '<span class="pill bad">KALDI</span>')
 
+    def _kaynak(h: str) -> str:
+        if bilinen is None:
+            return "–"
+        if h in bilinen:
+            return "kampanya"
+        return '<span class="pill warn">elle sonda</span>'
+
     body = "".join(
-        f'<tr><td>{_esc(h)}</td><td class="num">{s:.2f}</td><td>{_pill(p)}</td></tr>'
+        f'<tr><td>{_esc(h)}</td><td class="num">{s:.2f}</td><td>{_pill(p)}</td>'
+        f'<td>{_kaynak(h)}</td></tr>'
         for h, s, p in rows)
+    not_ = ""
+    if bilinen is not None and any(h not in bilinen for h, _s, _p in rows):
+        not_ = ('<p class="desc"><b>“elle sonda” ne demek:</b> bu kimlikler '
+                'kampanya hafızasında yok — yani sistemin ürettiği hipotezler '
+                'değil, insan tarafından elle yazılıp kilitli dönemde denenmiş '
+                'varyantlar. Kilitli dönemin amacı tek-atışlık olmaktır; elle '
+                'birden fazla varyant denemek bu korumayı zayıflatır ve sonuçları '
+                'sistemin başarısı gibi okumak YANLIŞ olur. Dürüstlük için '
+                'gizlenmiyor, ayrı işaretleniyor.</p>')
+    if gecersiz:
+        satir = "".join(
+            f'<tr><td>{_esc(h)}</td><td class="num">{(sh or 0):.2f}</td>'
+            f'<td colspan="2">{_esc(rsn or "—")}</td></tr>'
+            for h, sh, rsn in gecersiz)
+        not_ += ('<p class="desc" style="margin-top:14px"><b>GEÇERSİZ KILINMIŞ '
+                 'eski sonuçlar</b> (silinmedi — kayıt dürüstlüğü). Bunlar hatalı '
+                 'bir değerlendiriciyle üretildiği için sonuç sayılmıyor; '
+                 'gerekçeleri aşağıda:</p>'
+                 '<table><tr><th>Kimlik</th><th>Eski Sharpe</th>'
+                 '<th>Geçersiz kılma gerekçesi</th></tr>' + satir + '</table>')
     return ('<div class="card"><table><tr><th>Kimlik</th><th>Holdout Sharpe</th>'
-            '<th>Sonuç</th></tr>' + body + "</table></div>")
+            '<th>Sonuç</th><th>Kaynak</th></tr>' + body + "</table>" + not_ + "</div>")
 
 
 def _signal_formula(e: dict) -> str:
@@ -519,9 +690,13 @@ def _details(conn) -> str:
         tot = _total_return_pct(rj)
         ret_txt = (f' · <span style="color:var(--{"good" if tot >= 0 else "bad"})">'
                    f'getiri {tot:+.0f}%</span>') if tot is not None else ""
+        # sharpe None olabilir (metriksiz kabul kaydı: geriye-dönük kayıtlar,
+        # backfill sırası, elle eklenen kayıt). Biçimlendirme çökmemeli —
+        # dashboard'ın tamamı tek bir eksik sayı yüzünden üretilememişti.
+        sharpe_txt = f"Sharpe {sharpe:.2f}" if sharpe is not None else "Sharpe —"
         cards.append(f"""<div class="detail">
   <div class="dh"><span class="did">{_esc(hid)}</span> {_esc(h.get('title',''))}
-    <span class="dsh">Sharpe {sharpe:.2f}{ret_txt}</span></div>
+    <span class="dsh">{sharpe_txt}{ret_txt}</span></div>
   <div class="drow"><b>Ne yapıyor (düz anlatım):</b> {_plain_strategy(h)}</div>
   <div class="drow"><b>İddia:</b> {_esc(h.get('claim',''))}</div>
   <div class="drow"><b>Ekonomik mekanizma:</b> {_esc(mech.get('type',''))} — {_esc(mech.get('description',''))}</div>
@@ -621,7 +796,7 @@ def _render_report(rep: dict) -> str:
     return head + items
 
 
-def _reviewers(memory_db: str) -> str:
+def _reviewers(memory_db: str, bars_per_year: int = 252) -> str:
     """Bağımsız reviewer ajanları (Doküman 15): Backtest Auditor + Statistical Reviewer.
 
     Auditor raporu kabul sırasında saklanır (reviews_json); Statistical Reviewer
@@ -630,7 +805,7 @@ def _reviewers(memory_db: str) -> str:
     from agents.statistical_reviewer import StatisticalReviewer
 
     store = MemoryStore(memory_db)
-    rows = build_report(store.backtested_experiments())
+    rows = build_report(store.backtested_experiments(), bars_per_year=bars_per_year)
     store.close()
     stat_by_hid = {r.hypothesis_id: r for r in rows}
 
@@ -692,13 +867,20 @@ def _families(conn) -> str:
 
 
 def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
-                       campaign_name: str = "") -> str:
+                       campaign_name: str = "", bars_per_year: int = 252) -> str:
+    """bars_per_year: Sharpe yıllıklaştırma ölçeği (hisse 252 / kripto 365 / 8h 1095).
+    Verilmezse çoklu-test tablosu 252 varsayar ve leaderboard ile ÇELİŞİR."""
     conn = sqlite3.connect(memory_db)
     ts = datetime.now().strftime("%d.%m.%Y %H:%M")
     parts = [
         f'<h1>Araştırma Paneli</h1>',
         f'<p class="lead">Kampanya: <b>{_esc(campaign_name)}</b> · Oluşturma: {ts}</p>',
-        _banner(conn, holdout_db),
+        _banner(conn, holdout_db, memory_db),
+        _section("Sonuç — sade anlatım (teknik terim yok)",
+                 "Aşağıdaki bütün bölümler sürecin nasıl işlediğini gösterir. "
+                 "Bu ilk bölüm tek soruyu cevaplar: sonuç ne, paraya ne oldu? "
+                 "Alım-satım bilen ama makine öğrenmesi bilmeyen biri için yazıldı.",
+                 _trader_ozeti(memory_db, holdout_db, bars_per_year)),
         _section("Kampanya Özeti",
                  "Bu turda üretilen hipotezlerin karar dağılımı. 'Farklı yapı' = "
                  "pencereden bağımsız kaç farklı strateji YAPISI üretildi (yalnız "
@@ -729,13 +911,13 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "Çok sayıda deneme yapıldığında yüksek bir Sharpe tesadüfen çıkabilir. "
                  "Deflated Sharpe (DSR) ve FDR bunu düzeltir: FDR 'GEÇTİ' değilse sonuç "
                  "istatistiksel olarak kanıtlanmış sayılmaz.",
-                 _multiple_testing(memory_db)),
+                 _multiple_testing(memory_db, bars_per_year)),
         _section("Bağımsız Reviewer Ajanları (Doküman 15)",
                  "Üretici LLM'den AYRI, deterministik iki denetçi. Backtest Auditor "
                  "backtest'in GEÇERLİLİĞİNİ denetler (sızıntı/survivorship/maliyet/"
                  "likidite); Statistical Reviewer 'kabul' ile 'istatistiksel doğrulandı'yı "
                  "ayırır (FDR/DSR/güven aralığı/fold). TEMİZ/DİKKAT/SORUN her kontrol için.",
-                 _reviewers(memory_db)),
+                 _reviewers(memory_db, bars_per_year)),
         _section("Çok Amaçlı Sıralama (Pareto)",
                  "Kabul edilen stratejiler tek Sharpe ile değil; Sharpe alt güven "
                  "sınırı, drawdown ve turnover birlikte değerlendirilir. Pareto-optimal "
@@ -746,7 +928,7 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "Araştırma sırasında hiç görülmeyen, kilitli bir dönemde yapılan son "
                  "test. Bir stratejinin gerçekten genelleyip genellemediği buradan "
                  "anlaşılır (araştırma ajanı bu veriye asla erişemez).",
-                 _holdout(holdout_db)),
+                 _holdout(holdout_db, memory_db)),
         _section("Aile Performansı — Bütçe Dağılımı",
                  "Her strateji ailesinin kabul/toplam oranı. Sistem araştırma bütçesini "
                  "başarılı ailelere Thompson sampling (bandit) ile kaydırır.",
@@ -790,11 +972,21 @@ def _cli_main() -> None:
         name = _c["campaign"].get("name", name)
     except Exception:  # noqa: BLE001 — config yoksa genel ad
         pass
+    # Yıllıklaştırma ölçeğini data.yaml'dan türet (veri YÜKLEMEDEN) — aksi halde
+    # bu tek başına koşan rapor 252 varsayıp kampanya çıktısıyla çelişirdi.
+    bpy = 252
+    try:
+        from data import bars_per_year_from_config
+        _d = _yaml.safe_load(_io.open(os.path.join(here, "configs", "data.yaml"),
+                                      encoding="utf-8"))
+        bpy = bars_per_year_from_config(_d["data"])
+    except Exception:  # noqa: BLE001
+        pass
     out = generate_dashboard(
         os.path.join(here, "research_memory.sqlite"),
         os.path.join(here, "holdout_audit.sqlite"),
         os.path.join(here, "dashboard.html"),
-        campaign_name=name)
+        campaign_name=name, bars_per_year=bpy)
     print(f"Dashboard yazıldı: {out}")
 
 

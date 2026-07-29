@@ -22,10 +22,18 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from statistics import mean
 
 from dotenv import load_dotenv
+
+# Windows konsolu (cp1254) LLM/rapor metnindeki ok/em-dash gibi karakterlerde
+# UnicodeEncodeError ile PATLAR. main.py'deki korumanin aynisi (bkz. main.main).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
 
 from evaluation import build_report
 from evaluation.improvement import best_so_far, improvement_svg
@@ -149,11 +157,12 @@ class ContestantResult:
 
 
 def _metrics(label: str, memory: MemoryStore, provider,
-             target: "dict | None" = None) -> ContestantResult:
+             target: "dict | None" = None,
+             bars_per_year: int = 252) -> ContestantResult:
     stages = memory.stage_counts()
     decisions = memory.summary_by_decision()
     backtested = memory.backtested_experiments()
-    rows = build_report(backtested)
+    rows = build_report(backtested, bars_per_year=bars_per_year)
     accepts = decisions.get("accept", 0)
     lb = memory.leaderboard(limit=1)
     tokens = (getattr(provider, "total_prompt_tokens", 0)
@@ -244,7 +253,8 @@ def run_contestant(contestant: dict, data, cfg, critic, db_path: str,
     memory = MemoryStore(db_path)
     print(f"\n########  Yarışmacı: {label}  ########")
     run_campaign(provider, data, memory, cfg, critic=critic, literature=[])
-    res = _metrics(label, memory, provider, target=target)
+    res = _metrics(label, memory, provider, target=target,
+                   bars_per_year=getattr(data, "bars_per_year", 252))
     memory.close()
     return res
 
@@ -281,6 +291,17 @@ def print_aggregate(runs: "dict[str, list[ContestantResult]]", budget: int,
     print("  • [köşeli parantez] = seed'ler arası aralık (varyans).")
 
 
+# Değerlendirme ortamı compare.yaml ile değiştirildiğinde LLM'e verilen NÖTR
+# evren tarifi. Belirli bir varlık sınıfı/veri alanı ima ETMEZ — yarışmacılar
+# yalnızca gerçekten ellerinde olan alanlarla fikir üretsin diye.
+_NOTR_EVREN = (
+    "Günlük barlardan oluşan geniş kesitsel bir enstrüman evreni "
+    "(fiyat: açılış/yüksek/düşük/kapanış ve işlem hacmi). Hangi piyasa ve "
+    "hangi tarih aralığı olduğu BİLİNÇLİ olarak verilmiyor — genel geçer, "
+    "mekanizma temelli hipotezler üret. Yalnızca sana AÇIKÇA izin verilen veri "
+    "alanlarını kullan; listede olmayan bir alana dayanan fikirler elenir.")
+
+
 def main() -> None:
     load_dotenv(os.path.join(HERE, ".env"))
     campaign = load_yaml("campaign.yaml")["campaign"]
@@ -296,8 +317,30 @@ def main() -> None:
     # Karşılaştırma kendi değerlendirme ortamını seçebilir (compare.yaml -> data).
     # Araştırma verimliliği ancak SİNYAL-VAR ortamda ölçülebilir (bkz. compare.yaml).
     if comp.get("data"):
+        eski_kaynak = data_cfg.get("source")
         data_cfg = {**data_cfg, **comp["data"]}
         print(f"[compare] değerlendirme ortamı: {data_cfg['source']} (compare.yaml ezdi)")
+
+        # ANLATIYI DA HİZALA. Veri değişip ANLATI kampanyada kalırsa, LLM'e
+        # "kripto perpetual, funding_rate'e ÖNCELİK ver" denip elindeki alan
+        # listesinde funding_rate olmuyor: üretilen her hipotez `disallowed_field`
+        # ile eleniyor ve yarışmacı bütçesini boşa yakıyor. Gerçek koşuda
+        # görüldü (nemotron 2/2 hipotezini böyle kaybetti) — çökme değil, sessiz
+        # sabotaj olduğu için tabloda "kötü model" gibi görünüyordu.
+        if data_cfg.get("source") != eski_kaynak:
+            campaign = {**campaign, **(comp.get("campaign_override") or {})}
+            if not (comp.get("campaign_override") or {}):
+                campaign = {**campaign,
+                            "goal": "Kesitsel günlük long-short alpha ara",
+                            "literature_domain": "equity",
+                            "anonymous_description": _NOTR_EVREN,
+                            "universe_description": _NOTR_EVREN}
+            cfg = build_config(campaign)
+            if comp.get("budget_override"):
+                cfg.max_experiments = int(comp["budget_override"])
+            print("[compare] kampanya ANLATISI da nötrleştirildi (veri değişti): "
+                  "evren tarifi/hedef/literatür artık değerlendirme ortamıyla "
+                  "uyumlu. compare.yaml -> campaign_override ile özelleştirilebilir.")
 
     out_dir = os.path.join(HERE, comp.get("output_dir", "runs"))
     os.makedirs(out_dir, exist_ok=True)

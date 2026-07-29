@@ -41,7 +41,12 @@ sys.path.insert(0, HERE)
 pd.set_option("display.width", 200)
 pd.set_option("display.max_columns", 12)
 
-COST_BPS = 5.0
+# MALIYET KAMPANYADAN OKUNUR (configs/campaign.yaml -> budget.cost_bps).
+# Sabit 5.0 yazmak, aktif kripto kampanyasi 10.0 kullanirken bu betigi
+# YARIM maliyetle kosturuyordu: ayni hipotez kampanyada baska, burada
+# baska (daha iyimser) Sharpe gosteriyordu. Config yoksa 5.0 varsayilir.
+from evaluation.plain import kampanya_cost_bps
+COST_BPS = kampanya_cost_bps(5.0)
 _LOG_LINES: list[str] = []
 _WRITE_LOG = False
 
@@ -225,8 +230,18 @@ def generate(campaign, models, cfg, use_llm: bool):
     box(hyp.economic_mechanism.description)
     P("\n  YANLISLAMA KOSULU (hangi durumda 'yanlis' diyecegiz?):")
     f = hyp.falsification
-    P(f"    minimum Sharpe            : {getattr(f, 'minimum_sharpe', '-')}")
-    P(f"    minimum pozitif fold orani: {getattr(f, 'minimum_positive_walk_forward_folds', '-')}")
+    # NOT: alan adi `minimum_oos_sharpe`. Eskiden burada `minimum_sharpe`
+    # yaziyordu (boyle bir alan YOK) -> getattr varsayilana dusup her zaman '-'
+    # basiyordu, yani seffaflik scriptinde on-kayit esigi HIC gorunmuyordu.
+    P(f"    minimum OOS Sharpe        : {f.minimum_oos_sharpe}")
+    P(f"    minimum pozitif fold orani: "
+      f"{f.minimum_positive_walk_forward_folds if f.minimum_positive_walk_forward_folds is not None else '- (beyan yok -> kampanya tabani)'}")
+    P(f"    maksimum turnover / dususs: "
+      f"{f.maximum_turnover if f.maximum_turnover is not None else '-'} / "
+      f"{f.maximum_drawdown if f.maximum_drawdown is not None else '-'}")
+    P("    >> Bu esikler ON KAYITTIR (pre-registration): hipotezin kendi")
+    P("       taahhudu. KABUL kapisi DEGILDIR — kampanya esigi tabandir ve")
+    P("       hipotez kendini yalnizca DAHA SIKI baglayabilir (bkz. hard_gate).")
     P("\n  >> Ekonomik mekanizma ZORUNLU alan. Gerekce yazamayan hipotez sema")
     P("     dogrulamasindan gecemez — 'veri madenciligi' hipotezleri boylece elenir.")
     return hyp
@@ -729,10 +744,15 @@ def narrate(campaign, models, cfg, use_llm: bool):
     pos = res.exposures.get("positive_fold_fraction", 0.0)
     ic = res.exposures.get("ic", 0.0)
     P(f"""
-  SHARPE ORANI = {sharpe:+.2f}
+  SHARPE ORANI = {sharpe:+.2f}   ({len(folds)} donemin ORTALAMASI)
      Ne demek: "aldigin risk basina ne kadar kazandin". Kazanci, inis-cikisin
      (riskin) buyuklugune bolen bir not. Yuksek = ayni riske daha cok kazanc.
      Kaba olcek: 1'in ustu iyi, 2'nin ustu cok iyi, 0'in alti para kaybi.
+     NOT: Bu sayi her donem icin ayri hesaplanip ORTALANDI. Birazdan asagida
+     "elle kontrol" bolumunde TUM donemi tek parca sayan bir Sharpe daha
+     goreceksin — ikisi ayni sey degildir ve birbirini tutmak zorunda degil
+     (donemler farkli uzunlukta/oynaklikta olabilir). Asagidaki kontrolun
+     amaci hesabin DOGRULUGUNU gostermek, bu ortalamayi tekrarlamak degil.
 
   KAZANMA ORANI (win rate) = %{wr*100:.0f}
      Ne demek: islem yapilan gunlerin yuzde kaci artida kapandi.
@@ -761,10 +781,15 @@ def narrate(campaign, models, cfg, use_llm: bool):
     motor = fold_metrics(net_pnl, turnover_t, "t", "v", bars_per_year=bpy).sharpe
     P(f"""
   "Bu Sharpe rakami dogru mu, uydurma mi?" — elle kontrol:
+     Burada TUM donemi tek parca sayiyoruz (yukaridaki {sharpe:+.2f} ise
+     {len(folds)} donemin ortalamasiydi — bu yuzden iki sayi farkli cikabilir).
+     Kontrolun sorusu su: programin yaptigi hesap, kagit uzerinde elle
+     yapilanla AYNI mi?
+
      Gunluk ortalama kazanc  = {mean:+.6f}
      Gunluk inis-cikis (std) = {std:.6f}
-     Sharpe = ortalama / inis-cikis × √{bpy} = {elle:+.3f}
-     Programin buldugu        = {motor:+.3f}   → {'AYNI ✓' if abs(elle-motor) < 1e-6 else 'FARKLI!'}
+     ELLE  : ortalama / inis-cikis × √{bpy} = {elle:+.3f}
+     PROGRAM:                                {motor:+.3f}   → {'AYNI ✓ (hesap dogru)' if abs(elle-motor) < 1e-6 else 'FARKLI! (hesapta sorun var)'}
      (Ayrica Excel'de de dogrulanabilir: scripts/verify_sharpe.py bir tablo uretir.)""")
 
     # --- ADIM 6: karar ---

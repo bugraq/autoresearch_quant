@@ -16,8 +16,10 @@ Kullanım:
     .venv/Scripts/python.exe scripts/forward_test.py
     .venv/Scripts/python.exe scripts/forward_test.py --gunluk-cek   # (ileride: canlı bar)
 
-NOT: İlk koşu taze dönemi (2025→bugün) Binance'den indirir (birkaç dakika);
-sonraki koşular cache'ten hızlıdır. Strateji funding kullanıyorsa funding de çekilir.
+NOT: İlk koşu taze dönemi (2025→bugün) Binance'den indirir. Bu ~665 sembol ×
+2 uç nokta (fiyat + funding) demektir ve hız sınırı yüzünden **1 saati aşabilir**
+— takılmış değildir (ilerleme: data/binance_cache dosya sayısı artar). Sonraki
+koşular cache'ten saniyeler içinde açılır.
 """
 from __future__ import annotations
 
@@ -34,7 +36,12 @@ import pandas as pd
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-COST_BPS = 5.0
+# MALIYET KAMPANYADAN OKUNUR (configs/campaign.yaml -> budget.cost_bps).
+# Sabit 5.0 yazmak, aktif kripto kampanyasi 10.0 kullanirken bu betigi
+# YARIM maliyetle kosturuyordu: ayni hipotez kampanyada baska, burada
+# baska (daha iyimser) Sharpe gosteriyordu. Config yoksa 5.0 varsayilir.
+from evaluation.plain import kampanya_cost_bps
+COST_BPS = kampanya_cost_bps(5.0)
 _LOG: list[str] = []
 _WRITE = False
 
@@ -152,9 +159,26 @@ def main() -> None:
 
     graph = compile_hypothesis(hyp)
 
-    def _run(d):
-        """Bir dönemde stratejiyi koştur → (Sharpe, toplam, MaxDD, al-tut Sharpe, equity)."""
-        sig = compute_signal(graph, hyp, d)
+    def _run(d, history=None):
+        """Bir dönemde stratejiyi koştur → (Sharpe, toplam, MaxDD, al-tut Sharpe, equity).
+
+        ISINMA (history): sinyal, geçmiş+dönem birleşiminde hesaplanıp yalnız
+        döneme kesilir. Zorunlu, çünkü dönem TEK BAŞINA verilirse:
+          - rolling pencereler dönemin başında NaN kalır,
+          - ML modeli DÖNEMİN İÇİNDE yeniden eğitilir; yani ölçtüğümüz şey,
+            araştırmada kabul edilen model DEĞİL başka bir model olur.
+        holdout/service.py'da aynı hata düzeltilmişti; bu script kendi
+        değerlendirme yolunu kullandığı için düzeltmeyi ayrıca uygulamak
+        gerekti (aksi halde iki yer iki farklı sayı üretiyordu).
+        Bilgi akışı tek yönlü (geçmiş -> dönem): sızıntı değildir.
+        """
+        from data.synthetic import concat_market
+        if history is None:
+            sig = compute_signal(graph, hyp, d)
+        else:
+            full = concat_market(history, d)
+            sig = compute_signal(graph, hyp, full).reindex(
+                index=d.dates, columns=d.get("close").columns)
         net, _ = compute_pnl(sig, hyp, d, COST_BPS)
         eq = (1.0 + net).cumprod()
         b = buy_and_hold(d)
@@ -166,11 +190,21 @@ def main() -> None:
     # --- Araştırma + holdout (sistemin gördüğü dönem; cache'ten hızlı) ---
     P("\n  Sistemin gördüğü dönem yükleniyor (araştırma + kilitli holdout)...")
     research, holdout = M.load_data(campaign, data_cfg, cfg.research_fraction)
-    r_sh, r_tot, r_dd, _, _ = _run(research)
-    h_sh, h_tot, h_dd, _, _ = _run(holdout)
+    # Her donem, KENDINDEN ONCEKI veriyle isitilir (bkz. _run docstring).
+    r_sh, r_tot, r_dd, _, _ = _run(research)                 # ilk dilim: gecmis yok
+    h_sh, h_tot, h_dd, _, _ = _run(holdout, history=research)
 
     # --- İleri-test (taze dönem) ---
-    P("  Taze/el değmemiş dönem indiriliyor (ilk koşu birkaç dakika sürebilir)...")
+    # SÜRE UYARISI GERÇEKÇİ OLMALI: burada "birkaç dakika" yazıyordu; gerçek
+    # ölçüm ~665 sembol × 2 uç nokta (fiyat + funding) için 1 SAATİ aşıyor.
+    # Yanlış tahmin, kullanıcının çalışan süreci "takıldı" sanıp öldürmesine
+    # yol açar — ve indirme yarım kaldığı için bir daha baştan başlar.
+    n_sembol = len((data_cfg.get("binance") or {}).get("symbols") or []) or 665
+    P(f"\n  Taze/el değmemiş dönem indiriliyor: {forward_start} → {forward_end}")
+    P(f"    ~{n_sembol} sembol × 2 uç nokta (fiyat + funding), Binance hız sınırlı.")
+    P("    İLK koşuda bu adım 1 SAAT veya daha uzun sürebilir — TAKILMADI,")
+    P("    indiriyor. Sonraki koşular cache'ten saniyeler içinde açılır.")
+    P("    (İlerlemeyi görmek için: data/binance_cache klasöründeki dosya sayısı artar.)")
     try:
         fdata = _load_forward_data(campaign, data_cfg, forward_start, forward_end)
     except Exception as e:  # noqa: BLE001
@@ -179,7 +213,9 @@ def main() -> None:
         fdata = None
 
     if fdata is not None and len(fdata.dates) >= 20:
-        f_sh, f_tot, f_dd, fb_sh, f_eq = _run(fdata)
+        # Ileri-test icin gecmis = sistemin GORDUGU her sey (arastirma+holdout).
+        from data.synthetic import concat_market as _cm
+        f_sh, f_tot, f_dd, fb_sh, f_eq = _run(fdata, history=_cm(research, holdout))
     else:
         f_sh = f_tot = f_dd = fb_sh = None
         f_eq = None

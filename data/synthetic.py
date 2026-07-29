@@ -84,6 +84,35 @@ def split_by_fraction(md: MarketData, research_frac: float = 0.7) -> tuple[Marke
     return research, holdout
 
 
+def concat_market(history: MarketData, future: MarketData) -> MarketData:
+    """İki dilimi zaman ekseninde birleştir (history ÖNCE, future SONRA).
+
+    Neden gerekir (holdout ISINMA sorunu): holdout dilimi tek başına
+    değerlendirilirse strateji, kilitli dönemin BAŞINDA geçmişsiz kalır —
+    120 barlık bir rolling pencere holdout'un ilk 120 barını, walk-forward
+    eğitilen bir ML modeli ise ilk ~%17'sini NaN bırakır. Daha kötüsü: model
+    holdout'un KENDİ İÇİNDE yeniden eğitilir, yani sınav, araştırmada kabul
+    edilen modeli değil BAŞKA bir modeli ölçer.
+
+    Doğru bilgi akışı: geçmiş (araştırma dilimi) -> gelecek (holdout). Bu
+    SIZINTI DEĞİLDİR; ters yön (holdout -> araştırma) sızıntı olurdu ve burada
+    yapısal olarak imkânsızdır (history her zaman önce gelir).
+    """
+    if set(history.fields) != set(future.fields):
+        raise ValueError("concat_market: alan kümeleri farklı "
+                         f"({sorted(set(history.fields) ^ set(future.fields))})")
+    if history.bars_per_year != future.bars_per_year:
+        raise ValueError("concat_market: bar frekansları farklı "
+                         f"({history.bars_per_year} vs {future.bars_per_year})")
+    fields = {}
+    for k, hv in history.fields.items():
+        fv = future.fields[k]
+        cols = list(dict.fromkeys([*hv.columns, *fv.columns]))   # birleşim, sıra korunur
+        fields[k] = pd.concat([hv.reindex(columns=cols), fv.reindex(columns=cols)])
+    return MarketData(fields=fields, sectors=history.sectors or future.sectors,
+                      bars_per_year=history.bars_per_year)
+
+
 def gen_random(n_sec=20, n_days=750, seed=0) -> MarketData:
     """Öngörülemez rastgele yürüyüş — hiçbir alpha OLMAMALI."""
     rng = np.random.default_rng(seed)

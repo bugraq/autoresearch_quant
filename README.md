@@ -40,6 +40,7 @@ scripts/      # şeffaflık araçları: anatomi, benchmark, Sharpe doğrulama
 python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ./.venv/Scripts/python.exe -m tests.test_contracts_smoke   # duman testi
+./.venv/Scripts/python.exe -m tests.run_all                # BÜTÜN testler (40)
 ```
 
 ## Yol haritası (walking skeleton)
@@ -100,6 +101,106 @@ tek tek `dummy → gerçek` yap. Baştan gerçek yapılacak iki şey:
   (motor==NumPy==Excel), kampanya `--detay` modu (her adım tek tek)
 - [x] Kıyas / maymun testi (`scripts/benchmark.py`): random/al-tut/duygusal trader'a
   karşı + masrafsız kontrol (üstünlük gerçek sinyalden mi?)
+- [x] Holdout ISINMA düzeltmesi — kilitli dönem artık geçmişle (araştırma dilimi)
+  ısıtılarak değerlendirilir. Öncesinde: (a) rolling pencereler holdout'un başında
+  NaN kalıyordu (gerçek koşuda kapsama %83), (b) daha kritiği, ML modeli
+  holdout'un İÇİNDE yeniden eğitiliyordu — yani sınav, araştırmada kabul edilen
+  modeli değil BAŞKA bir modeli ölçüyordu. Etki gerçek koşuda büyük:
+  hyp_0033 holdout Sharpe -0.36 (kaldı) -> +0.72 (geçti). Bilgi akışı tek yönlü
+  (geçmiş->gelecek) olduğu için sızıntı değildir. `tests/test_holdout_warmup.py`
+### Gerçek koşu denetimi (senin çalıştıracağın yollar)
+Testler değil, **gerçek giriş noktaları** uçtan uca koşuldu: `agent.py`,
+`main.py` (gerçek LLM), `main.py --holdout`, `compare.py`, `scripts/*`,
+`dashboard.report`. Bulunan ve düzeltilenler:
+
+- [x] **`compare.py` (menü [3]) tamamen kırıktı** — `compare.yaml` değerlendirme
+  ortamını sentetiğe çeviriyor ama `allowed_fields` kampanyadan (kripto,
+  `funding_rate`) geliyordu: 5 yarışmacının 4'ü
+  `KeyError: 'Veri alanı yok: funding_rate'` ile çöktü, tablo anlamsız çıktı.
+  İki katmanlı düzeltme: (a) `run_campaign` artık izinli alanları YÜKLENEN
+  verininkilerle kesiyor ve neyin düştüğünü yüksek sesle söylüyor
+  (`align_allowed_fields`; hiçbiri kalmazsa hata verip duruyor — sessizce
+  anlamsız kampanya koşmaz), (b) veri ezildiğinde kampanya ANLATISI da
+  nötrleşiyor — yoksa LLM'e "funding_rate'e öncelik ver" denip alan listesinde
+  olmuyor ve her hipotez `disallowed_field` ile eleniyordu (çökme değil, sessiz
+  sabotaj: tabloda "kötü model" gibi görünüyordu).
+  (`tests/test_field_alignment.py`)
+- [x] **`scripts/*` maliyeti kampanyadan okuyor** — dördü de `COST_BPS = 5.0`
+  sabitliyordu; aktif kampanya 10.0 kullanıyor. Yani kıyas (maymun testi) ve
+  ileri-test YARIM maliyetle koşuyor, aynı hipotez kampanyada başka /
+  "her şeyi açıklayan" script'te başka (daha iyimser) Sharpe gösteriyordu.
+- [x] **`forward_test.py`'da ısınma hatasının ikinci kopyası** — script kendi
+  değerlendirme yolunu kullandığı için `holdout/service.py` düzeltmesinden
+  yararlanmıyordu; her dönemi izole değerlendirip modeli dönemin İÇİNDE
+  yeniden eğitiyordu. Artık her dönem kendinden öncekiyle ısıtılıyor ve iki
+  bağımsız yol AYNI sayıyı veriyor (hyp_0010 holdout: **−0.32** her ikisinde).
+- [x] `anatomy.py` ön-kayıt eşiği hep `-` basıyordu (`minimum_sharpe` diye bir
+  alan yok; doğrusu `minimum_oos_sharpe`) — şeffaflık scriptinde eşik görünmüyordu.
+- [x] Sağlamlık reddi artık elma-elma: gate Sharpe'ı fold ORTALAMASI, sağlamlık
+  testleri TÜM-SERİ. "0.93 -> -0.17" yazmak düşüşü olduğundan büyük gösteriyordu
+  (gerçek maliyet etkisi 0.77 -> -0.17); ikisi de yazılıyor.
+- [x] `forward_test.py` süre uyarısı gerçekçileştirildi ("birkaç dakika" -> ilk
+  koşuda 1 saati aşabilir): yanlış tahmin, çalışan süreci "takıldı" sanıp
+  öldürmeye ve indirmenin baştan başlamasına yol açıyordu.
+
+- [x] **Ödül-hackleme açığı kapatıldı (hard gate)** — `hard_gate.py` docstring'i
+  "kabul kapısını LLM'e vermeyiz" diyordu ama walk-forward tutarlılık kontrolü
+  `hyp.falsification.minimum_positive_walk_forward_folds **or** min_positive_folds`
+  yazıyordu: LLM'in beyanı kampanya eşiğinin YERİNE geçiyordu. `0.1` yazan bir
+  hipotez, 5 dönemin 4'ünde para kaybedip birinde patlarken KABUL alabiliyordu.
+  Artık kampanya eşiği TABANDIR (`max(kampanya, kendi)`) — hipotez kendini
+  yalnızca daha SIKI bağlayabilir; gevşetme girişimi yok sayılır ama
+  `weaker_own_threshold` notuyla kabul kaydına yazılır (iz sürülebilsin).
+  Gerçek kampanyada bu açık KULLANILMAMIŞ (0 hipotez gevşek eşik beyan etmiş),
+  yani mevcut sonuçlar etkilenmiyor — düzeltme önleyicidir.
+  (`tests/test_hard_gate.py`, 5 test)
+- [x] **Kilitli dönem: gerekçeli geçersiz kılma** (`--holdout-invalidate "gerekçe"`).
+  Sorun: ısınma hatası ZATEN KAYDEDİLMİŞ holdout sonuçlarını da yanlış yapmıştı;
+  one-shot kilidi (doğru olarak) düzeltmeye izin vermiyordu ve tek çıkış yolu
+  kaydı SİLMEKTİ — bilimsel kaydı silmek en kötü seçenek. Çözüm append-only:
+  kayıt `invalidated` işaretlenir, **gerekçe + tarih + değerlendirici sürümü**
+  kalıcı saklanır, dashboard eski sonucu gerekçesiyle ayrı tabloda gösterir.
+  Gerekçe ZORUNLU (gerekçesiz sıfırlama sınavı ortadan kaldırır); geçersiz kayıt
+  kotayı doldurmaz; one-shot yalnız AKTİF kayıtlar için işler. Eski audit
+  dosyaları (`hypothesis_id UNIQUE`) kayıpsız taşınır.
+  **Meşru kullanım:** değerlendirici hatalıysa. **Meşru DEĞİL:** sonucu görüp
+  stratejiyi değiştirip yeniden denemek — bu kilitli dönemi araştırma verisine
+  çevirir. Denetlenebilirlik caydırıcılıktır. (`tests/test_holdout_warmup.py`)
+- [x] **Model modunda sızıntı açığı kapatıldı** — static validator yalnızca
+  *sinyal* düğümünün bilgi-anına bakıyordu. Model modunda sinyal, modelin TÜM
+  feature'lardan ürettiği tahmindir: sinyal ifadesinin atıf yapmadığı bir
+  feature `close_t` bilgisi taşıyıp modele X olarak girebiliyor ve `close_t`'de
+  işlem yapılabiliyordu = aynı-bar sızıntısı, üstelik "TEMİZ" damgasıyla.
+  Artık model modunda bütün feature'lar denetleniyor (`tests/test_leakage.py`,
+  3 yeni test; dsl_formula'da yanlış pozitif üretmiyor).
+- [x] Holdout audit'inde **kampanya adayı / elle sonda ayrımı** — kilitli döneme
+  kampanya dışı, elle yazılmış sondalar da girmişti ve biri "geçti"; dashboard
+  bunu "kilitli dönemi 1/6 geçti" diye gösteriyordu. Artık ayrım kanıta dayalı
+  (hafızada kaydı olmayan kimlik = kampanya ürünü değil), başlık yalnız kampanya
+  adaylarını sayıyor, sondalar tabloda `elle sonda` etiketiyle ve açıklamasıyla
+  görünüyor (gizlenmiyor).
+- [x] ML hedefi düzeltilmiş fiyattan (`adjusted_close`) — PnL zaten öyleydi;
+  hedefi ham `close`'tan almak modele "temettüsüz getiriyi tahmin et" deyip
+  sonucu temettülü getiriyle ölçmekti (hissede sistematik, kriptoda etkisiz).
+- [x] Bağımsız çapraz-doğrulama referansı da yıllıklaştırmayı veriden alıyor
+  (`backtest_service/reference.py`; sabit 252 kriptoda denetçinin cetvelini bozuyordu).
+- [x] Dashboard, metriği olmayan kabul kaydında çökmüyor (tek eksik sayı tüm
+  raporu üretilemez yapıyordu).
+- [x] **Sade anlatım katmanı** (`evaluation/plain.py`) — ML/ajan bilmeyen, sadece
+  alım-satım bilen biri çıktıyı okuyabilsin. Kampanya sonunda **TRADER ÖZETİ**
+  (fikirler nerede elendi, geçenlerin karnesi, somut para karşılığı, terim sözlüğü),
+  dashboard'ın en üstünde aynı özet, holdout ve çoklu-test tablolarında "bu ne
+  diyor" çevirisi. **Dürüstlük kuralı koda gömülü:** sade dil ≠ iyimser dil —
+  para kaybı asla "başarı" diye sunulmaz, hüküm önce paraya bakar, çoklu-test
+  onaylamadıysa hüküm otomatik aşağı çekilir (`tests/test_plain.py`).
+- [x] Kıyas hükmü dürüstleştirildi — "3 kıyastan 2'sini geçtik, eşik sağlandı"
+  ifadesi kaldırıldı: ortanca maymun %-96 batarken %-20 batmak başarı değildir.
+  Artık önce para, sonra kıyas sayacı (bilgi amaçlı) basılır; yer tutucu hipotez
+  ölçülüyorsa bu ayrıca ve büyük harfle uyarılır.
+- [x] Yıllıklaştırma tutarlılığı — çoklu-test tablosu ve dashboard artık ölçeği
+  VERİDEN alır. Öncesinde 252 varsayıyordu: 8h kripto kampanyasında aynı
+  stratejinin Sharpe'ı leaderboard'da 0.97, çoklu-test tablosunda 0.49 görünüyordu.
+  (DSR/FDR etkilenmiyordu — per-period; yalnız raporlanan Sharpe ve CI.)
 - [ ] (opsiyonel) lineage grafiği görselleştirmesi
 - [ ] forward-test / paper-trading modülü (holdout'un canlı, bitmeyen versiyonu)
 
