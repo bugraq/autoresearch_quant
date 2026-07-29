@@ -77,6 +77,27 @@ CREATE INDEX IF NOT EXISTS ix_forward_hyp
     ON forward_test (hypothesis_id, as_of);
 """
 
+# ADAY SİCİLİ — KAMPANYALAR ARASI kalıcı. Sorun: kampanya hafızası `--fresh`
+# ile sıfırlanınca, o kampanyada üç dönemden geçmiş bir aday CANLI kayıttan
+# kayboluyordu (yalnızca arşiv dosyasında kalıyordu). Oysa "hangi kampanyada
+# bulunduğu" adayın değerini değiştirmez — proje boyunca sağ kalan adaylar
+# tek bir yerde birikmelidir.
+#
+# ANAHTAR = hypothesis_id DEĞİL, PARMAK İZİ. Kimlik kampanyalar arası tekil
+# değil (--fresh sayacı sıfırlar); iki farklı hipotez aynı kimliği taşıyabilir
+# (gerçek örnek: v2 ve v4'ün hyp_0033'ü). İçerik hash'i tekildir.
+_REGISTRY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS candidate_registry (
+    fingerprint     TEXT PRIMARY KEY,
+    hypothesis_id   TEXT,
+    title           TEXT,
+    campaign        TEXT,
+    hypothesis_json TEXT,
+    research_sharpe REAL,
+    first_seen      TEXT
+);
+"""
+
 # Eski şemadan (hypothesis_id UNIQUE, ek sütunlar yok) yeni şemaya taşıma.
 _MIGRATE_COLUMNS = {
     "status": "TEXT DEFAULT 'active'",
@@ -141,6 +162,7 @@ class HoldoutService:
         self._migrate()                            # varsa yeni şemaya taşı
         self._audit.execute(_AUDIT_INDEX)          # sütunlar hazır: indeks
         self._audit.executescript(_FORWARD_SCHEMA)  # ileri-test sicili
+        self._audit.executescript(_REGISTRY_SCHEMA)  # kampanyalar arası aday sicili
         self._audit.commit()
 
     # ---------------- ileri-test sicili (tek-atış DEĞİL) ------------------
@@ -271,7 +293,32 @@ class HoldoutService:
         return self._audit.execute(
             "SELECT COUNT(*) FROM holdout_access WHERE status='active'").fetchone()[0]
 
-    def evaluate(self, hyp: HypothesisSpec) -> HoldoutResult:
+    def register_candidate(self, hyp: HypothesisSpec, campaign: "str | None" = None,
+                           research_sharpe: "float | None" = None) -> str:
+        """Adayı KAMPANYALAR ARASI sicile yaz (parmak izi anahtarlı).
+
+        Aynı strateji ikinci bir kampanyada yeniden bulunursa üzerine yazılmaz:
+        ilk görülme kaydı korunur (keşif tarihi bilgidir). Döndürür: parmak izi.
+        """
+        iz = hypothesis_fingerprint(hyp)
+        self._audit.execute(
+            "INSERT OR IGNORE INTO candidate_registry (fingerprint, hypothesis_id, "
+            "title, campaign, hypothesis_json, research_sharpe, first_seen) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (iz, hyp.hypothesis_id, hyp.title, campaign,
+             hyp.model_dump_json(), research_sharpe,
+             datetime.now(timezone.utc).isoformat()))
+        self._audit.commit()
+        return iz
+
+    def registry(self) -> list[tuple]:
+        """(fingerprint, hid, title, campaign, research_sharpe, first_seen)."""
+        return self._audit.execute(
+            "SELECT fingerprint, hypothesis_id, title, campaign, research_sharpe, "
+            "first_seen FROM candidate_registry ORDER BY first_seen").fetchall()
+
+    def evaluate(self, hyp: HypothesisSpec, campaign: "str | None" = None,
+                 research_sharpe: "float | None" = None) -> HoldoutResult:
         """Bir adayı kilitli dönemde BİR KEZ değerlendir. Yalnızca özet döner."""
         # ONE-SHOT: AKTİF bir kayıt varsa ikinci değerlendirme yasak. Geçersiz
         # kılınmış (invalidated) kayıt engellemez — ama o geçersiz kılma
@@ -285,6 +332,10 @@ class HoldoutService:
         # Kota kontrolü
         if self._count() >= self._max:
             raise HoldoutError(f"Holdout aday kotası doldu ({self._max}).")
+
+        # Kilitli döneme giren aday CİDDİ bir adaydır: kampanyalar arası
+        # sicile burada yazılır (kampanya hafızası sıfırlansa da kaybolmaz).
+        self.register_candidate(hyp, campaign, research_sharpe)
 
         graph = compile_hypothesis(hyp)
         signal, coverage = self._warm_signal(graph, hyp)

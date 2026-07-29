@@ -450,6 +450,20 @@ def _uc_donem_satirlari(memory_db: str, holdout_db: str) -> "list[tuple]":
         hc.close()
     if not holdout:
         return []
+    # ARAŞTIRMA BİLGİSİ ÖNCE SİCİLDEN. Sicil kampanyalar arası yaşar; canlı
+    # hafıza `--fresh` ile sıfırlanır. Sicilde yoksa (eski kayıt) hafızaya
+    # düşülür — orada da kimlik çakışması parmak iziyle denetlenir.
+    sicil = {}
+    hc2 = sqlite3.connect(holdout_db)
+    try:
+        sicil = {f: (t, r, c) for f, t, r, c in _q(
+            hc2, "SELECT fingerprint, title, research_sharpe, campaign "
+                 "FROM candidate_registry")}
+    except sqlite3.Error:
+        pass          # eski audit dosyası: sicil tablosu yok
+    finally:
+        hc2.close()
+
     mc = sqlite3.connect(memory_db)
     try:
         arastirma = {h: (t, s, hj) for h, t, s, hj in _q(
@@ -466,7 +480,12 @@ def _uc_donem_satirlari(memory_db: str, holdout_db: str) -> "list[tuple]":
         # bambaşka bir hipotez. Parmak izi tutmuyorsa araştırma Sharpe'ını
         # JOIN ETME — yanlış hipotezi raporlamak, hiç raporlamamaktan kötüdür.
         beklenen = hashler.get(hid)
-        if beklenen and hj:
+        # Sicilde parmak iziyle kayıtlıysa ORASI esastır (kampanya bağımsız).
+        if beklenen and beklenen in sicil:
+            s_title, s_r, s_camp = sicil[beklenen]
+            t = f"{s_title or ''}" + (f"  [{s_camp}]" if s_camp else "")
+            r_sh = s_r
+        elif beklenen and hj:
             try:
                 from contracts.hypothesis_spec import HypothesisSpec
                 from holdout.service import hypothesis_fingerprint

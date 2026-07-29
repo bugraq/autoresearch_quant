@@ -370,7 +370,8 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
     for hid, hjson, research_sharpe in candidates:
         hyp = HypothesisSpec.model_validate_json(hjson)
         try:
-            res = holdout.evaluate(hyp)
+            res = holdout.evaluate(hyp, campaign=campaign.get('name'),
+                                   research_sharpe=research_sharpe)
         except HoldoutError as e:
             print(f"  {hid}  atlandı: {e}")
             continue

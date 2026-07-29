@@ -162,6 +162,83 @@ def test_parmak_izi_holdout_kaydina_yaziliyor():
     print("  [ok] parmak izi holdout kaydina yaziliyor")
 
 
+# ===========================================================================
+# KAMPANYALAR ARASI ADAY SICILI
+# ===========================================================================
+# Sorun: kampanya hafizasi --fresh ile sifirlaninca, o kampanyada uc donemden
+# gecmis aday CANLI kayittan kayboluyordu (yalniz arsiv dosyasinda kaliyordu).
+# "Hangi kampanyada bulundugu" adayin degerini degistirmez.
+
+
+def _tmp_servis():
+    import os
+    import tempfile
+
+    import pandas as pd
+
+    from data.synthetic import MarketData
+    from holdout import HoldoutService
+    fd, db = tempfile.mkstemp(suffix=".sqlite")
+    os.close(fd); os.remove(db)
+    bos = MarketData(fields={"close": pd.DataFrame({"X": [1.0, 2.0]})})
+    return HoldoutService(bos, audit_path=db), db
+
+
+def test_sicil_kampanya_sifirlansa_da_yasar():
+    svc, db = _tmp_servis()
+    a = _spec("hyp_0033", 60, "v2 adayi")
+    svc.register_candidate(a, campaign="v2", research_sharpe=0.66)
+    svc.close()
+
+    # Yeni kampanya: AYNI kimlik, BASKA hipotez (gercek cakisma senaryosu)
+    from holdout import HoldoutService
+    import pandas as pd
+    from data.synthetic import MarketData
+    svc2 = HoldoutService(MarketData(fields={"close": pd.DataFrame({"X": [1.0, 2.0]})}),
+                          audit_path=db)
+    b = _spec("hyp_0033", 20, "v4 adayi")
+    svc2.register_candidate(b, campaign="v4", research_sharpe=1.14)
+    kayit = svc2.registry()
+    svc2.close()
+
+    assert len(kayit) == 2, f"iki farkli aday tek satira ezildi: {len(kayit)}"
+    kampanyalar = {r[3] for r in kayit}
+    assert kampanyalar == {"v2", "v4"}, kampanyalar
+    izler = {r[0] for r in kayit}
+    assert len(izler) == 2, "ayni kimlik yuzunden parmak izleri cakisti"
+    print("  [ok] sicil kampanyalar arasi yasiyor, ayni kimlik ezmiyor")
+
+
+def test_ayni_aday_ikinci_kez_bulunursa_ilk_kayit_korunur():
+    """Kesif tarihi bilgidir; uzerine yazmak onu yok eder."""
+    svc, _db = _tmp_servis()
+    h = _spec("hyp_0001", 60, "orijinal")
+    svc.register_candidate(h, campaign="v1", research_sharpe=0.50)
+    h2 = _spec("bambaska_kimlik", 60, "yeniden bulundu")   # AYNI strateji
+    svc.register_candidate(h2, campaign="v9", research_sharpe=9.99)
+    kayit = svc.registry()
+    svc.close()
+    assert len(kayit) == 1, "ayni strateji iki kez sicile girdi"
+    assert kayit[0][3] == "v1" and abs(kayit[0][4] - 0.50) < 1e-9,         f"ilk kayit ezildi: {kayit[0]}"
+    print("  [ok] ayni strateji yeniden bulununca ilk kayit korunuyor")
+
+
+def test_holdout_degerlendirmesi_adayi_sicile_yazar():
+    from data import gen_cross_sectional_momentum, split_by_fraction
+    from holdout import HoldoutService
+    import os, tempfile
+    fd, db = tempfile.mkstemp(suffix=".sqlite"); os.close(fd); os.remove(db)
+    _r, holdout = split_by_fraction(gen_cross_sectional_momentum(seed=1), 0.7)
+    svc = HoldoutService(holdout, audit_path=db, cost_bps=1.0)
+    svc.evaluate(_spec("hyp_0007", 20), campaign="test_kampanya",
+                 research_sharpe=0.77)
+    kayit = svc.registry()
+    svc.close()
+    assert len(kayit) == 1 and kayit[0][3] == "test_kampanya", kayit
+    assert abs(kayit[0][4] - 0.77) < 1e-9
+    print("  [ok] holdout degerlendirmesi adayi otomatik sicile yaziyor")
+
+
 def main() -> None:
     test_holdout_gecip_ileri_testte_cokene_GUVENILIR_DENMEZ()
     test_uc_donemde_de_ayakta_kalan_dogrulanir()
@@ -174,6 +251,9 @@ def main() -> None:
     test_ayni_kimlik_farkli_strateji_ayirt_edilir()
     test_ayni_strateji_farkli_kimlik_ve_baslikta_ayni_iz()
     test_parmak_izi_holdout_kaydina_yaziliyor()
+    test_sicil_kampanya_sifirlansa_da_yasar()
+    test_ayni_aday_ikinci_kez_bulunursa_ilk_kayit_korunur()
+    test_holdout_degerlendirmesi_adayi_sicile_yazar()
     print("OK — üç-dönem hükmü testleri geçti (tek holdout yeterli sayılmıyor).")
 
 
