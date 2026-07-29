@@ -216,6 +216,10 @@ def _build_context(cfg: CampaignConfig, memory: MemoryStore, remaining: int,
                      if counts.get(f.value, (0, 0))[1] < 2]
     # AŞIRI kullanılan operatörler (yapı-tabanlı rut; family etiketi kandırılsa bile)
     overused = memory.dominant_operators(min_frac=0.5, k=3)
+    # KULLANILMAYAN VERİ ALANLARI — en somut çeşitlilik kaldıracı. Ölçüldü:
+    # gerçek kampanyada 28 hipotezin %100'ü funding_rate, %96'sı close kullandı;
+    # high/low/open'a HİÇ dokunulmadı. Aile/operatör ipuçları bunu kıramadı.
+    unused_fields = memory.underused_fields(cfg.allowed_fields, max_frac=0.15)
     # LLM'e giden evren tarifi: anonimleştirme açıksa ticker/tarih İÇERMEZ
     # (kampanya kendi anonim tarifini verebilir; yoksa large-cap varsayılanı).
     llm_universe = ((cfg.anonymous_description or ANONYMOUS_UNIVERSE)
@@ -233,6 +237,7 @@ def _build_context(cfg: CampaignConfig, memory: MemoryStore, remaining: int,
         procedural_lessons=procedural,
         underexplored_regions=underexplored,
         overused_motifs=overused,
+        underused_fields=unused_fields,
         generation_mode=mode,
         parent_hypothesis=parent,
         parent_hypothesis_b=parent_b,

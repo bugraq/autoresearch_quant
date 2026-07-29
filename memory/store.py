@@ -160,6 +160,11 @@ class MemoryStore:
         from memory.similarity import dominant_operators
         return dominant_operators(self._all_specs(), min_frac=min_frac, k=k)
 
+    def underused_fields(self, allowed: "list[str]", max_frac: float = 0.15) -> list:
+        """İzinli ama neredeyse hiç denenmemiş veri alanları (çeşitlilik kaldıracı)."""
+        from memory.similarity import underused_fields
+        return underused_fields(self._all_specs(), allowed, max_frac=max_frac)
+
     def sharpes_in_order(self) -> list[float]:
         """Backtest'lenen deneylerin Sharpe'ları ÜRETİM SIRASINDA (id).
 

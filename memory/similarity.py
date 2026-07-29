@@ -142,6 +142,41 @@ def dominant_operators(hyps: "list[HypothesisSpec]", min_frac: float = 0.5,
     return dominant[:k]
 
 
+def _fields_of(expr: Expression, out: set) -> None:
+    if expr.op == "field" and expr.field:
+        out.add(expr.field)
+    for c in expr.inputs:
+        if isinstance(c, Expression):
+            _fields_of(c, out)
+
+
+def underused_fields(hyps: "list[HypothesisSpec]", allowed: "list[str]",
+                     max_frac: float = 0.15) -> "list[str]":
+    """İzinli olduğu hâlde neredeyse HİÇ kullanılmayan veri alanları.
+
+    Neden alan-tabanlı: `dominant_operators` operatör rutunu, family etiketi
+    ise (LLM kandırabildiği için) zayıf bir çeşitlilik sinyali verir. Asıl
+    daralma VERİ ALANI seviyesinde ölçüldü — gerçek kampanyada 28 hipotezin
+    %100'ü funding_rate, %96'sı close kullanmış; high/low/open'a HİÇ
+    dokunulmamıştı. Kullanılmayan alanları LLM'e ADIYLA söylemek, "farklı bir
+    şey dene" demekten çok daha somut bir kaldıraçtır.
+    """
+    if not allowed:
+        return []
+    if not hyps:
+        return list(allowed)
+    counts: Counter = Counter()
+    for h in hyps:
+        used: set = set()
+        _fields_of(h.signal, used)
+        for f in h.features:
+            _fields_of(f.expression, used)
+        for fld in used:
+            counts[fld] += 1
+    n = len(hyps)
+    return [f for f in allowed if counts.get(f, 0) / n <= max_frac]
+
+
 def _jaccard(a: Counter, b: Counter) -> float:
     inter = sum((a & b).values())
     union = sum((a | b).values())

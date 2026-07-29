@@ -79,6 +79,9 @@ class ResearchContext(BaseModel):
     # AŞIRI kullanılan operatörler (yapı-tabanlı; family etiketi kandırıldığında bile
     # gerçek rutu yakalar). 'new' modunda LLM'e "bunlardan kaçın" denir.
     overused_motifs: list[str] = Field(default_factory=list)
+    #: İzinli ama neredeyse hiç kullanılmamış VERİ ALANLARI. Operatör/family
+    #: sinyallerinden daha somut bir çeşitlilik kaldıracı (bkz. similarity).
+    underused_fields: list[str] = Field(default_factory=list)
 
     # Üretim modu
     generation_mode: GenerationMode = GenerationMode.new

@@ -212,6 +212,17 @@ HİPOTEZ B:
         under_hint = (f" ÖNCELİK: şu aileler bu kampanyada HİÇ/AZ denendi — "
                       f"bunlardan birini GERÇEKTEN uygula: {under}." if under else "")
         avoid = ", ".join(ctx.overused_motifs) if ctx.overused_motifs else ""
+        # KULLANILMAYAN VERİ ALANLARI — en somut çeşitlilik kaldıracı.
+        # Ölçüldü (28 hipotezlik gerçek kampanya): %100 funding_rate, %96 close,
+        # open/high/low %0. Aile ve operatör ipuçları bu daralmayı kıramadı;
+        # alanı ADIYLA söylemek "farklı bir şey dene" demekten çok daha nettir.
+        unused = ", ".join(ctx.underused_fields) if ctx.underused_fields else ""
+        unused_hint = (f"\n📊 HİÇ/AZ KULLANILMAMIŞ VERİ ALANLARI: {unused}. "
+                       f"Bu alanlar SANA AÇIK ama neredeyse hiç denenmedi — "
+                       f"aramanın kör noktası burası. Bu tur bunlardan EN AZ "
+                       f"BİRİNİ kullanan bir mekanizma kur (high/low için "
+                       f"intraday_range ve close_location operatörleri var)."
+                       if unused else "")
         avoid_hint = (f"\n⛔ AŞIRI KULLANIM: son üretimlerin çoğu şu operatörleri "
                       f"içeriyor: {avoid}. Bu tur bunları KULLANMADAN, farklı "
                       f"operatörlerle (ör. rolling_mean, delta, ewma, correlation, "
@@ -219,7 +230,7 @@ HİPOTEZ B:
         task = (f"""GÖREV — YENİ: Derslere göre UMUT VERİCİ aileyi seç ya da hiç
 denenmemiş bir yön keşfet. ZAYIF/DOYGUN aileleri (dersteki uyarılar) tekrarlama.{under_hint}
 Sıkışıp aynı fikri (ör. volatilite-koşullu reversal) tekrar tekrar üretme —
-yapısal olarak FARKLI bir mekanizma dene.{avoid_hint}""")
+yapısal olarak FARKLI bir mekanizma dene.{avoid_hint}{unused_hint}""")
 
     lit_block = (f"\nLİTERATÜR (belgelenmiş klasik faktörler — bunlardan İLHAM al, "
                  f"DSL ile uygula):\n{literature}\n" if literature else "")
