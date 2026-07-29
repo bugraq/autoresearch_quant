@@ -152,11 +152,88 @@ def test_metriksiz_kabul_dashboardu_cokertmez():
         print("  [ok] metriksiz kabul: dashboard cokmedi, 'Sharpe —' basildi")
 
 
+def test_dashboard_tutarli_ve_hizali():
+    """Dashboard KENDİ İÇİNDE çelişmemeli ve tabloları KAYMAMALI.
+
+    Kullanıcı raporu: "saçma sapan şeyler kaymış birbirine". Üç gerçek sorun
+    bulundu; bu test üçünü birden kilitler:
+
+      1) SÜTUN KAYMASI: "geçersiz kılınmış" tablosunda 3 başlık varken satırlar
+         colspan=2 ile 4 sütuna taşıyordu — gerekçe hücresi hayali bir sütuna
+         kayıyordu.
+      2) HUNİ AŞAMA GİZLİYORDU: low_originality ve degenerate_conditional
+         _STAGE_ORDER'da YOKTU; gerçek kampanyada 56 kaydın 32'si hunide hiç
+         görünmüyordu ("her hipotez bu aşamalardan geçer" denmesine rağmen).
+      3) FARKLI PAYDA: özet kutuları TÜM kayıtları (optimizer denemeleri dahil)
+         "hipotez" sayıyordu; banner 56, huni 32 diyordu.
+    """
+    import re
+
+    with tempfile.TemporaryDirectory() as d:
+        mem = os.path.join(d, "m.sqlite")
+        store = MemoryStore(mem)
+        res = BacktestResult(
+            hypothesis_id="hyp_d1",
+            per_fold_metrics=[FoldMetrics(fold_id="f0", split="research", sharpe=0.8,
+                                          annualized_return=0.1, volatility=0.12,
+                                          max_drawdown=0.15, turnover=40.0)],
+            net_returns=[0.001, -0.0005, 0.0012] * 90)
+        store.record(_hyp(), Decision(hypothesis_id="hyp_d1",
+                                      decision=DecisionType.accept,
+                                      source=DecisionSource.gate),
+                     "accepted", result=res)
+        # Optimizer denemesi: ayrı FİKİR DEĞİL, hipotez sayısına girmemeli
+        store.record(_hyp(), Decision(hypothesis_id="hyp_d1",
+                                      decision=DecisionType.reject,
+                                      source=DecisionSource.statistical),
+                     "parameter_search", result=res)
+        # Hunide görünmesi gereken ama eskiden GİZLENEN aşamalar
+        for stage in ("low_originality", "degenerate_conditional"):
+            store.record(_hyp(), Decision(hypothesis_id="hyp_d1",
+                                          decision=DecisionType.duplicate,
+                                          source=DecisionSource.novelty), stage)
+        store.close()
+        out = generate_dashboard(mem, os.path.join(d, "yok.sqlite"),
+                                 os.path.join(d, "o.html"), campaign_name="t")
+        icerik = open(out, encoding="utf-8").read()
+
+    # (1) Her tablonun başlığı ile satırları AYNI sütun sayısında olmalı
+    for tm in re.finditer(r"<table>(.*?)</table>", icerik, re.S):
+        satir = re.findall(r"<tr>(.*?)</tr>", tm.group(1), re.S)
+        if not satir:
+            continue
+        bas = len(re.findall(r"<th", satir[0]))
+        for k, r in enumerate(satir[1:], 1):
+            n = len(re.findall(r"<t[dh]", r))
+            for cs in re.findall(r'colspan="(\d+)"', r):
+                n += int(cs) - 1
+            assert n == bas, (f"tablo sütunu kaymış: başlık {bas}, satır {k} -> "
+                              f"{n} (colspan/hücre sayısı uyuşmuyor)")
+
+    # (2) Gizlenen aşamalar artık hunide
+    for etiket in ("Düşük özgünlük", "Ölü koşul"):
+        assert etiket in icerik, f"huni aşama gizliyor: '{etiket}' yok"
+
+    # (3) Banner / özet kutusu / huni AYNI hipotez sayısını söylemeli
+    banner = re.search(r"olarak <b>(\d+)</b> hipotez", icerik)
+    kutu = re.search(r'>(\d+)</div><div class="l">Üretilen hipotez', icerik)
+    huni = re.search(r"Toplam <b>(\d+)</b> hipotez", icerik)
+    assert banner and kutu and huni, "sayaçlardan biri kayıp"
+    assert banner.group(1) == kutu.group(1) == huni.group(1), (
+        f"üç bölüm üç farklı sayı diyor: banner={banner.group(1)}, "
+        f"kutu={kutu.group(1)}, huni={huni.group(1)}")
+    assert kutu.group(1) == "3", \
+        f"optimizer denemesi hipotez sayıldı: {kutu.group(1)} (beklenen 3)"
+    print("  [ok] dashboard tutarlı: sütunlar hizalı, aşama gizlenmiyor, "
+          "üç sayaç aynı")
+
+
 def main():
     test_generate_dashboard()
     test_metriksiz_kabul_dashboardu_cokertmez()
     test_elle_sonda_kampanya_adayindan_ayrilir()
     test_hafiza_yoksa_ayrim_yapilmaz_ama_patlamaz()
+    test_dashboard_tutarli_ve_hizali()
     print("OK — dashboard testi geçti.")
 
 

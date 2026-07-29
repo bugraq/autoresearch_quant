@@ -17,15 +17,25 @@ from evaluation import build_report, evaluate_strategies
 from memory import MemoryStore
 
 # Pipeline aşamaları — funnel sırası (üstten alta)
+# Huni sirasi (ustten alta). EKSIK ASAMA BIRAKILMAZ: 'low_originality' ve
+# 'degenerate_conditional' burada YOKTU ve 56 kaydin 8'i hunide hic
+# gorunmuyordu — huni "her hipotez bu asamalardan gecer" diyorken sessizce
+# asama gizliyordu. (parameter_search bilerek disarida: o ayri bir FIKIR
+# degil, kabul edilen bir stratejinin pencere aramasi; asagida ayrica
+# raporlanir ki sayilar gorunur bicimde toplansin.)
 _STAGE_ORDER = [
     ("compile_error", "Derleme hatası"),
     ("static_rejected", "Sızıntı / statik red"),
     ("critic_rejected", "Critic reddi (ekonomik)"),
-    ("duplicate", "Tekrar (novelty)"),
+    ("degenerate_conditional", "Ölü koşul (kural boşa çalışıyor)"),
+    ("duplicate", "Tekrar (aynı fikir)"),
+    ("low_originality", "Düşük özgünlük (çok benzer)"),
     ("gate_rejected", "Performans kapısı reddi"),
     ("robustness_rejected", "Sağlamlık testi reddi"),
     ("accepted", "KABUL"),
 ]
+#: Huni FIKIR sayar; bu asama fikir degil (optimizer denemesi).
+_NON_HYPOTHESIS_STAGES = {"parameter_search"}
 _REJECT_STAGES = {"compile_error", "static_rejected", "critic_rejected",
                   "gate_rejected", "robustness_rejected"}
 
@@ -147,11 +157,46 @@ def _holdout_counts(holdout_db: str, memory_db: "str | None" = None) -> tuple:
 
 
 def _banner(conn, holdout_db: str, memory_db: "str | None" = None) -> str:
-    total = _q(conn, "SELECT COUNT(*) FROM experiment")[0][0]
-    acc = _q(conn, "SELECT COUNT(*) FROM experiment WHERE decision='accept'")[0][0]
+    """En üstteki özet cümle — ALTTAKİ BÖLÜMLERLE AYNI SAYIYI söylemek zorunda.
+
+    İki tutarsızlık buradaydı:
+      1) `COUNT(*)` tüm kayıtları sayıyordu (optimizer denemeleri dahil): banner
+         "56 hipotez" derken hemen altındaki özet/huni "32" diyordu.
+      2) "n tanesi kilitli holdout dönemini geçti" cümlesi tek başına duruyordu.
+         Ölçüldü ki holdout'u geçen 3 adayın 3'ü taze veride ÇÖKTÜ; banner
+         "4 geçti" diye MÜJDE verirken üç-dönem bölümü "1 doğrulandı" diyordu.
+         Banner artık nihai hükmü söyler.
+    """
+    hariç = "', '".join(sorted(_NON_HYPOTHESIS_STAGES))
+    total = _q(conn, "SELECT COUNT(*) FROM experiment "
+                     f"WHERE stage NOT IN ('{hariç}')")[0][0]
+    acc = _q(conn, "SELECT COUNT(*) FROM experiment WHERE decision='accept' "
+                   f"AND stage NOT IN ('{hariç}')")[0][0]
     passed, cand, s_pass, s_cand = _holdout_counts(holdout_db, memory_db)
-    hold_txt = (f"bunlardan <span class='hl'>{passed}</span> tanesi kilitli holdout "
-                f"dönemini geçti" if cand else "holdout değerlendirmesi henüz yapılmadı")
+
+    # NİHAİ HÜKÜM: kaç aday İKİ bağımsız OOS döneminde birden ayakta kaldı?
+    dogrulanan = olculen = 0
+    if memory_db:
+        from evaluation.three_period import final_verdict
+        for _h, _t, r, h, f in _uc_donem_satirlari(memory_db, holdout_db):
+            v = final_verdict(r, h, f)
+            olculen += int(v.verdict != "EKSİK")
+            dogrulanan += int(v.passed)
+
+    if not cand:
+        hold_txt = "holdout değerlendirmesi henüz yapılmadı"
+    elif not olculen:
+        hold_txt = (f"bunlardan <span class='hl'>{passed}</span> tanesi kilitli "
+                    f"dönemi geçti — ama ikinci bağımsız dönem (ileri-test) HENÜZ "
+                    f"ÖLÇÜLMEDİ, yani hüküm EKSİK")
+    elif dogrulanan:
+        hold_txt = (f"{passed} tanesi kilitli dönemi, <span class='hl'>{dogrulanan}"
+                    f"</span> tanesi İKİ bağımsız örneklem-dışı dönemi birden geçti "
+                    f"(“alpha bulundu” değil: henüz ölmedi)")
+    else:
+        hold_txt = (f"{passed} tanesi kilitli dönemi geçti AMA "
+                    f"<span class='hl'>hiçbiri</span> ikinci bağımsız dönemde "
+                    f"ayakta kalamadı (kilitli dönem tek başına yetmiyor)")
     if s_cand:
         hold_txt += (f" (ayrıca kampanya dışı, elle denenmiş {s_cand} sonda kilitli "
                      f"dönemde çalıştırılmış; {s_pass} tanesi geçmiş — bunlar sistemin "
@@ -291,16 +336,34 @@ def _trader_ozeti(memory_db: str, holdout_db: str, bars_per_year: int) -> str:
 
 
 def _tiles(conn, memory_db: str) -> str:
-    total = _q(conn, "SELECT COUNT(*) FROM experiment")[0][0]
-    by_dec = dict(_q(conn, "SELECT decision, COUNT(*) FROM experiment GROUP BY decision"))
-    fams = _q(conn, "SELECT COUNT(DISTINCT family) FROM experiment WHERE sharpe IS NOT NULL")[0][0]
+    """Özet kutular — HİPOTEZ sayar, kayıt değil.
+
+    Eskiden `COUNT(*)` ile TÜM kayıtlar sayılıyordu; oysa kayıtların bir kısmı
+    `parameter_search` (kabul edilen bir stratejinin pencere aramaları) ve bunlar
+    ayrı FİKİR değildir. Sonuç: bu bölüm "56 hipotez / 40 reddedilen" derken hemen
+    altındaki huni "32 hipotez" diyordu — yan yana iki kutu, iki farklı payda,
+    hiçbir açıklama yok. Artık ikisi de hipotez sayar; optimizer denemeleri
+    KENDİ kutusunda gösterilir (gizlenmez, karıştırılmaz).
+    """
+    hariç = "', '".join(sorted(_NON_HYPOTHESIS_STAGES))
+    nerede = f"WHERE stage NOT IN ('{hariç}')"
+    total = _q(conn, f"SELECT COUNT(*) FROM experiment {nerede}")[0][0]
+    by_dec = dict(_q(conn, "SELECT decision, COUNT(*) FROM experiment "
+                           f"{nerede} GROUP BY decision"))
+    opt = _q(conn, "SELECT COUNT(*) FROM experiment WHERE stage IN "
+                   f"('{hariç}')")[0][0]
+    fams = _q(conn, "SELECT COUNT(DISTINCT family) FROM experiment "
+                    f"{nerede} AND sharpe IS NOT NULL")[0][0]
     store = MemoryStore(memory_db)
     structures = store.distinct_structure_count()   # farklı YAPI (pencereden bağımsız)
     store.close()
-    items = [("Toplam hipotez", total, "b"), ("Kabul edilen", by_dec.get("accept", 0), "g"),
+    items = [("Üretilen hipotez", total, "b"),
+             ("Kabul edilen", by_dec.get("accept", 0), "g"),
              ("Reddedilen", by_dec.get("reject", 0), "r"),
              ("Tekrar (elendi)", by_dec.get("duplicate", 0), "w"),
              ("Farklı yapı", structures, "b"), ("Denenen aile", fams, "b")]
+    if opt:
+        items.append(("Optimizer denemesi", opt, "w"))
     return '<div class="tiles">' + "".join(
         f'<div class="tile {c}"><div class="n">{v}</div><div class="l">{_esc(l)}</div></div>'
         for l, v, c in items) + "</div>"
@@ -318,7 +381,22 @@ def _funnel(conn) -> str:
             f'<div class="frow"><div class="lbl">{_esc(label)}</div>'
             f'<div class="track"><div class="bar {cls}" style="width:{w}%"></div></div>'
             f'<div class="cnt">{c}</div></div>')
-    return '<div class="card">' + "".join(rows) + "</div>"
+    # SAYILAR TOPLANMALI. Eskiden huni yalnizca listedeki asamalari basiyordu;
+    # listede olmayan asama sessizce kayboluyordu ve toplam tutmuyordu.
+    gosterilen = sum(counts.get(st, 0) for st, _ in _STAGE_ORDER)
+    opt = sum(v for k, v in counts.items() if k in _NON_HYPOTHESIS_STAGES)
+    kayip = sum(v for k, v in counts.items()
+                if k not in {st for st, _ in _STAGE_ORDER} | _NON_HYPOTHESIS_STAGES)
+    dip = (f'<p class="desc" style="margin-top:8px">Toplam <b>{gosterilen}</b> '
+           f'hipotez bu aşamalardan geçti (sayılar toplanır).')
+    if opt:
+        dip += (f' Ayrıca <b>{opt}</b> parametre-arama denemesi var; bunlar ayrı '
+                f'FİKİR değil, kabul edilen bir stratejinin pencere aramasıdır — '
+                f'huniye girmez ama çoklu-test sayımına girer.')
+    if kayip:
+        dip += (f' <b>UYARI: {kayip} kayıt tanınmayan bir aşamada</b> — huni '
+                f'eksik, _STAGE_ORDER güncellenmeli.')
+    return '<div class="card">' + "".join(rows) + dip + "</p></div>"
 
 
 def _total_return_pct(returns_json: "str | None") -> "float | None":
@@ -614,7 +692,9 @@ def _holdout(holdout_db: str, memory_db: "str | None" = None) -> str:
     if gecersiz:
         satir = "".join(
             f'<tr><td>{_esc(h)}</td><td class="num">{(sh or 0):.2f}</td>'
-            f'<td colspan="2">{_esc(rsn or "—")}</td></tr>'
+            # colspan=2 idi ama tabloda 3 baslik var -> satirlar 4 sutuna
+            # tasiyor ve gerekce hucresi hayali bir sutuna kayiyordu.
+            f'<td>{_esc(rsn or "—")}</td></tr>'
             for h, sh, rsn in gecersiz)
         not_ += ('<p class="desc" style="margin-top:14px"><b>GEÇERSİZ KILINMIŞ '
                  'eski sonuçlar</b> (silinmedi — kayıt dürüstlüğü). Bunlar hatalı '
