@@ -385,10 +385,34 @@ def main() -> None:
     # DEVAM (varsayılan) veya SIFIRLA (--fresh). Devam: novelty/çoklu-test/öğrenme
     # koşular arası birikir; aynı hipotez tekrar üretilmez (Doküman: campaign = çok deney).
     if args.fresh:
-        for p in (DB_PATH, HOLDOUT_DB):
-            if os.path.exists(p):
-                os.remove(p)
-        print("(--fresh) Yeni kampanya: hafıza sıfırlandı.")
+        # ARAŞTIRMA hafızası sıfırlanır (yeni kampanya = yeni N, doğru).
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+        # HOLDOUT AUDIT'İ ASLA SİLİNMEZ. Eskiden burada os.remove(HOLDOUT_DB)
+        # vardı ve bu, projenin en güçlü bilimsel iddiasını rutin bir bayrakla
+        # yok ediyordu: kilitli dönem kaydı one-shot, append-only ve geçersiz
+        # kılma için GEREKÇE zorunlu — ama `--fresh` hepsini gerekçesiz,
+        # izsiz siliyordu. Üstelik bu, "yeni kampanya" için VARSAYILAN yol
+        # olduğundan kazara oluyordu (bu oturumda iki kez oldu).
+        #
+        # Kilitli dönem KAMPANYA BAŞINA değil, PROJE ÇAPINDA sonlu bir
+        # kaynaktır: her kullanım onu bir miktar aşındırır. Bu yüzden audit
+        # kampanyalar arası KORUNUR ve aday kotası ortak sayılır — yeni bir
+        # kampanya açmak, kilitli dönemi sıfırlamaz.
+        if os.path.exists(HOLDOUT_DB):
+            import shutil
+            from datetime import datetime as _dt
+            yedek_dir = os.path.join(HERE, "arsiv")
+            os.makedirs(yedek_dir, exist_ok=True)
+            damga = _dt.now().strftime("%Y%m%d_%H%M%S")
+            shutil.copy(HOLDOUT_DB,
+                        os.path.join(yedek_dir, f"holdout_audit_{damga}.sqlite"))
+            print(f"(--fresh) Araştırma hafızası sıfırlandı. HOLDOUT AUDIT "
+                  f"KORUNDU (yedeği: arsiv/holdout_audit_{damga}.sqlite).")
+            print("          Kilitli dönem proje çapında sonlu bir kaynaktır; "
+                  "yeni kampanya onu sıfırlamaz, aday kotası ortaktır.")
+        else:
+            print("(--fresh) Yeni kampanya: araştırma hafızası sıfırlandı.")
     memory = MemoryStore(DB_PATH)
 
     print(f"=== Kampanya: {campaign['name']} ===")
