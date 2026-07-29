@@ -1,0 +1,122 @@
+  [binance] 50/665 sembol indirildi
+  [binance] 300/665 sembol indirildi
+  [binance] 350/665 sembol indirildi
+  [binance] 450/665 sembol indirildi
+  [binance] 500/665 sembol indirildi
+  [binance] 550/665 sembol indirildi
+  [binance] 600/665 sembol indirildi
+  [binance] 650/665 sembol indirildi
+  [binance] 369 sembol × 5479 bar (8h) | funding'i olan: 369 | ölü coin yüklendi: 22/28
+  [binance] veri gelmeyen 296 sembol (örnek: ['0GUSDT', '1000000BOBUSDT', '2ZUSDT', '42USDT', '4USDT'])
+Literatür (statik corpus, reproducible, alan=crypto):
+  • Funding kalabalıklığı — daimi vadeli sözleşmede funding oranı POZİTİFken uzun taraf kalabalık ve kal
+  • Tasfiye kaskadı — aşırı funding ile birlikte gelen sert fiyat hareketi zorunlu pozisyon kapanışların
+  • Kripto momentum — kısa/orta vadeli (haftalar ölçeğinde) getiri devamı; yatırımcı dikkat akışı ve az-
+  • Kripto kısa vadeli reversal — bireysel yatırımcı ağırlıklı, kaldıraçlı piyasada sert hareketler aşır
+  • Oynaklık-ölçekli sinyal — yüksek oynaklık rejiminde sinyaller kararsızlaşır; oynaklığa göre ölçeklem
+  • İllikidite primi — düşük dolar-hacimli enstrümanlar likidite primi taşır; ancak işlem maliyeti bu pr
+
+(--fresh) Yeni kampanya: hafıza sıfırlandı.
+=== Kampanya: crypto_funding_v1 ===
+Evren: ~665 Binance USDT perpetual kripto (yaşayanlar + delist olmuş ölüler: LUNA/FTT dahil), günlük OHLCV + funding rate, 2020-2024. Survivorship düzeltilmiş: coin yalnızca verisi olduğu günlerde işlem görür (LUNA 17.50->0.008 çöküşü veride var). Kesitsel long-short, 7/24 piyasa.
+Sağlayıcı: openrouter | Bütçe: 24 deney
+
+
+==========================================================================
+  DENEY 1/24  --  mod: sifirdan yeni fikir
+==========================================================================
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+     -> hyp_0001 "Volume-funding rate interaction reversal signal" (aile: volume, model: random_forest)
+     iddia: Extreme funding rates combined with elevated dollar volume identify crowded leveraged positions prone to liquidation cascades (positive funding) or ag
+  2. Bilgisayar diline cevriliyor (derleme)...
+     -> 9 islem dugumu olustu
+  3. Sizinti denetimi (gelecege bakiyor mu?)...
+     -> temiz (sinyal, islemden ONCE biliniyor)
+  4. Fikir sayiya donusuyor (sinyal hesaplaniyor, model egitiliyor)...
+     -> 3835 bar x 369 varlik panel (%25 dolu)
+  5. Gecmis veride para ile test (backtest, 5 donem)...
+     -> donem Sharpe'lari: +2.03 +3.48 -0.01 -1.81 -0.38
+     -> ortalama Sharpe +0.66 | ongoru gucu IC +0.003
+  6. Karar kapilari (esikler)...
+[1/24] (new) hyp_0001 Volume-funding rate interaction reversal signal -> RED (gate, Sharpe 0.66): fold_inconsistency
+
+==========================================================================
+  DENEY 2/24  --  mod: sifirdan yeni fikir
+==========================================================================
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+     -> hyp_0002 "Regime-conditioned funding mean reversion vs momentum" (aile: regime_conditioned, model: random_forest)
+     iddia: In high volatility regimes, extreme funding rates predict reversals due to liquidation cascades; in low volatility regimes, momentum persists as lever
+  2. Bilgisayar diline cevriliyor (derleme)...
+     -> 15 islem dugumu olustu
+  3. Sizinti denetimi (gelecege bakiyor mu?)...
+     -> temiz (sinyal, islemden ONCE biliniyor)
+[2/24] (new) hyp_0002 Regime-conditioned funding mean reversion vs momentum -> DÜŞÜK ÖZGÜNLÜK (0.20<0.25, ~hyp_0001 %80) — yeniden üretim istenecek
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+     -> hyp_0003 "Funding Rate Acceleration and Volatility Regime Interaction" (aile: regime_conditioned, model: random_forest)
+     iddia: Funding rate extremes predict reversals in high volatility regimes (liquidation cascade risk) but trend continuation in low volatility regimes (persis
+  2. Bilgisayar diline cevriliyor (derleme)...
+     -> 9 islem dugumu olustu
+  3. Sizinti denetimi (gelecege bakiyor mu?)...
+     -> temiz (sinyal, islemden ONCE biliniyor)
+  4. Fikir sayiya donusuyor (sinyal hesaplaniyor, model egitiliyor)...
+     -> 3835 bar x 369 varlik panel (%25 dolu)
+  5. Gecmis veride para ile test (backtest, 5 donem)...
+     -> donem Sharpe'lari: +0.75 +0.85 +1.26 -0.14 -0.57
+     -> ortalama Sharpe +0.43 | ongoru gucu IC +0.002
+  6. Karar kapilari (esikler)...
+[2/24] (new) [tekrar 1] hyp_0003 Funding Rate Acceleration and Volatility Regime Interaction -> RED (gate, Sharpe 0.43): below_acceptance_sharpe
+
+==========================================================================
+  DENEY 3/24  --  mod: sifirdan yeni fikir
+==========================================================================
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+     -> hyp_0004 "Funding-rate extremes, momentum divergence, and liquidity-filtered reversal in crypto perpetuals" (aile: composite, model: random_forest)
+     iddia: Extreme funding rates signal crowded positioning; when combined with momentum divergence (price trend vs funding imbalance) and sufficient liquidity, 
+  2. Bilgisayar diline cevriliyor (derleme)...
+     -> 9 islem dugumu olustu
+  3. Sizinti denetimi (gelecege bakiyor mu?)...
+     -> temiz (sinyal, islemden ONCE biliniyor)
+[3/24] (new) hyp_0004 Funding-rate extremes, momentum divergence, and liquidity-filtered reversal in crypto perpetuals -> DÜŞÜK ÖZGÜNLÜK (0.20<0.25, ~hyp_0001 %80) — yeniden üretim istenecek
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+[3/24] ÜRETİM HATASI (atlandı): TypeError: 'NoneType' object is not subscriptable
+
+==========================================================================
+  DENEY 4/24  --  mod: sifirdan yeni fikir
+==========================================================================
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+     -> hyp_0006 "Volatility-regime conditioned funding rate mean reversion via random forest" (aile: volatility, model: random_forest)
+     iddia: Funding rate extremity predicts mean reversion in crypto perpetuals, but its predictive power is strongly modulated by the prevailing volatility regim
+  2. Bilgisayar diline cevriliyor (derleme)...
+     -> 8 islem dugumu olustu
+  3. Sizinti denetimi (gelecege bakiyor mu?)...
+     -> temiz (sinyal, islemden ONCE biliniyor)
+  4. Fikir sayiya donusuyor (sinyal hesaplaniyor, model egitiliyor)...
+     -> 3835 bar x 369 varlik panel (%25 dolu)
+  5. Gecmis veride para ile test (backtest, 5 donem)...
+     -> donem Sharpe'lari: -1.50 -0.23 +0.25 -2.11 -0.67
+     -> ortalama Sharpe -0.85 | ongoru gucu IC -0.003
+  6. Karar kapilari (esikler)...
+[4/24] (new) hyp_0006 Volatility-regime conditioned funding rate mean reversion via random forest -> RED (gate, Sharpe -0.85): below_acceptance_sharpe
+
+==========================================================================
+  DENEY 5/24  --  mod: sifirdan yeni fikir
+==========================================================================
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...
+     -> hyp_0007 "Funding-aware momentum with volatility and liquidity regime filters" (aile: momentum, model: random_forest)
+     iddia: Medium-term price momentum in crypto perps is strengthened when funding pressure is moderate (not extreme), volatility is low, and dollar volume is hi
+  2. Bilgisayar diline cevriliyor (derleme)...
+     -> 9 islem dugumu olustu
+  3. Sizinti denetimi (gelecege bakiyor mu?)...
+     -> temiz (sinyal, islemden ONCE biliniyor)
+  4. Fikir sayiya donusuyor (sinyal hesaplaniyor, model egitiliyor)...
+     -> 3835 bar x 369 varlik panel (%23 dolu)
+  5. Gecmis veride para ile test (backtest, 5 donem)...
+     -> donem Sharpe'lari: +0.81 -0.94 +0.58 -0.85 -0.62
+     -> ortalama Sharpe -0.21 | ongoru gucu IC +0.004
+  6. Karar kapilari (esikler)...
+[5/24] (new) hyp_0007 Funding-aware momentum with volatility and liquidity regime filters -> RED (gate, Sharpe -0.21): below_acceptance_sharpe
+
+==========================================================================
+  DENEY 6/24  --  mod: sifirdan yeni fikir
+==========================================================================
+  1. Hipotez uretiliyor (LLM: nvidia/nemotron-3-ultra-550b-a55b:free)...

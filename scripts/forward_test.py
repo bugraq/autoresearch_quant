@@ -131,12 +131,40 @@ def main() -> None:
     if not os.path.exists(db):
         P("\n  research_memory.sqlite yok — önce bir kampanya koş (agent.bat -> 1).")
         return
-    acc = MemoryStore(db).accepted_hypotheses(limit=1)
+    acc = MemoryStore(db).accepted_hypotheses(limit=20)
     if not acc or not acc[0][1]:
         P("\n  Kabul edilen strateji yok — ileri-test edilecek aday yok.")
         P("  (Sistem henüz hiçbir hipotezi kabul etmedi; bu da dürüst bir durum.)")
         return
-    hid, hj, sh_research = acc[0]
+
+    # ADAY SEÇİMİ: KİLİTLİ DÖNEMİ GEÇEN varsa O seçilir; yoksa en yüksek
+    # araştırma Sharpe'ı.
+    # Neden: eskiden koşulsuz `limit=1` (= en yüksek araştırma Sharpe'ı)
+    # alınıyordu. Gerçek koşuda bu, holdout'ta ÇÖKEN hipotezi (hyp_0010,
+    # +0.97 -> -0.32) ileri-teste sokuyor, holdout'tan SAĞ ÇIKANI (hyp_0033,
+    # +0.72) atlıyordu. Araştırma Sharpe'ı kalite ölçüsü DEĞİLDİR — kilitli
+    # dönem sonucudur; ileri-test de o adayı izlemeli.
+    gecenler: set = set()
+    if os.path.exists(HOLDOUT_DB := os.path.join(HERE, "holdout_audit.sqlite")):
+        import sqlite3
+        _c = sqlite3.connect(f"file:{HOLDOUT_DB}?mode=ro", uri=True)
+        try:
+            kolonlar = {r[1] for r in _c.execute("PRAGMA table_info(holdout_access)")}
+            sql = "SELECT hypothesis_id FROM holdout_access WHERE passed=1"
+            if "status" in kolonlar:          # geçersiz kılınanlar sayılmaz
+                sql += " AND status='active'"
+            gecenler = {r[0] for r in _c.execute(sql)}
+        except sqlite3.Error:
+            pass
+        finally:
+            _c.close()
+
+    secim = next((a for a in acc if a[0] in gecenler), acc[0])
+    hid, hj, sh_research = secim
+    secim_not = ("kilitli dönemi GEÇEN aday" if hid in gecenler else
+                 ("en yüksek araştırma Sharpe'ı — kilitli dönemi geçen aday YOK"
+                  if gecenler or os.path.exists(HOLDOUT_DB)
+                  else "en yüksek araştırma Sharpe'ı (holdout henüz koşulmadı)"))
     hyp = HypothesisSpec.model_validate(json.loads(hj))
 
     # --- İleri-test dönemi: sistemin gördüğü son tarih + 1 gün → bugün ---
@@ -147,6 +175,7 @@ def main() -> None:
     P(f"""
   Aday strateji     : {hid}  "{hyp.title}"
                       (araştırma Sharpe ~{sh_research:+.2f})
+  Neden bu aday     : {secim_not}
   Sistemin gördüğü  : ... {seen_end}  (araştırma + holdout buraya kadar)
   İLERİ-TEST dönemi : {forward_start}  →  {forward_end}   ({gun} gün, EL DEĞMEMİŞ)
 

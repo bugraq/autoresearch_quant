@@ -39,6 +39,15 @@ RATE_LIMIT_BACKOFF = 20.0   # saniye; 20, 40, 60, 80 -> toplam ~3.3 dk sabır
 # yapamıyordu: non-daemon thread'leri atexit'te join edip kapanışı kilitliyordu).
 
 
+class LLMEmptyResponseError(RuntimeError):
+    """Sağlayıcı HTTP 200 döndü ama içerik yok (choices boş/None).
+
+    OpenRouter'da upstream sağlayıcı hata verdiğinde görülür. Ayrı bir tip
+    olması önemli: çağıran taraf bunu 'model bozuk çıktı verdi'den ayırıp
+    (ör. yeniden deneme) karar verebilsin.
+    """
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -111,7 +120,16 @@ class OpenAICompatibleClient:
                  "parameters": {"engine": "auto", "max_results": 5}}]}
         def _call():
             try:
-                return self._create(kwargs, hard_timeout)
+                resp = self._create(kwargs, hard_timeout)
+                # BOŞ/EKSİK YANIT: OpenRouter upstream hata verdiğinde HTTP 200
+                # ile choices=None dönebiliyor. Kontrolü BURADA yaparız ki
+                # aşağıdaki sabır döngüsü bunu da yeniden denesin (429 gibi
+                # geçici bir upstream sorunudur; slot çöpe gitmesin).
+                if not (getattr(resp, "choices", None) or []):
+                    raise LLMEmptyResponseError(
+                        f"Sağlayıcı boş yanıt döndü (choices yok). model={model} "
+                        f"upstream_hata={getattr(resp, 'error', None)!r}")
+                return resp
             except BadRequestError:
                 # Bazı modeller response_format desteklemez; JSON zorlamadan tekrar
                 # dene. (Timeout/ağ hatasında TEKRAR DENEME — yukarı fırlat ki çağıran
@@ -128,16 +146,19 @@ class OpenAICompatibleClient:
             try:
                 resp = _call()
                 break
-            except RateLimitError:
+            except (RateLimitError, LLMEmptyResponseError) as e:
                 if attempt >= RATE_LIMIT_RETRIES:
                     raise
                 wait = RATE_LIMIT_BACKOFF * (attempt + 1)
-                print(f"    [llm] rate-limit (429); {wait:.0f} sn bekleyip tekrar "
+                sebep = ("rate-limit (429)" if isinstance(e, RateLimitError)
+                         else "bos yanit (upstream hatasi)")
+                print(f"    [llm] {sebep}; {wait:.0f} sn bekleyip tekrar "
                       f"deneniyor ({attempt + 1}/{RATE_LIMIT_RETRIES})...", flush=True)
                 time.sleep(wait)
+        msg = getattr(resp.choices[0], "message", None)   # boşluk _call'da elendi
         usage = resp.usage
         return LLMResponse(
-            text=resp.choices[0].message.content or "",
+            text=(getattr(msg, "content", None) or ""),
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             model=resp.model or model,
