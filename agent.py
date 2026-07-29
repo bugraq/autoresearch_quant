@@ -158,7 +158,16 @@ def main() -> None:
     while True:
         console.print()
         _render_menu(console)
-        choice = Prompt.ask("\nSeçim", choices=[k for k, *_ in _MENU], default="1")
+        # EOF/Ctrl+C'de CIRKIN TRACEBACK basma. "Enter'a bas" adiminda zaten
+        # yakalaniyordu ama SECIM sorusunda yakalanmiyordu: girdi borudan
+        # gelirse ya da kullanici Ctrl+D/Ctrl+C yaparsa panel stack trace ile
+        # cokuyordu (kontrol paneli, projenin ana giris noktasi).
+        try:
+            choice = Prompt.ask("\nSeçim", choices=[k for k, *_ in _MENU],
+                                default="1")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Görüşürüz.[/dim]")
+            return
         action = actions[choice]
         if action == "QUIT":
             console.print("[dim]Görüşürüz.[/dim]")

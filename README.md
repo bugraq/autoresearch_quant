@@ -213,11 +213,13 @@ ezberlemek yok:
 | 1 | Kampanyayı izle (devam) | Ajanı koştur; görünüm seç: **canlı panel / detaylı akış / sade özet** |
 | 2 | Yeni kampanya (sıfırdan) | Hafızayı sıfırlar, baştan başlar (görünüm seçilir) |
 | 3 | LLM karşılaştırması | 5 LLM'i aynı bütçeyle yarıştırır (hangi model daha iyi hipotez) |
-| 4 | Holdout değerlendirmesi | Kabul edilenleri kilitli dönemde tek-atış sınar |
-| 5 | Dashboard (tarayıcı) | Görsel rapor: leaderboard, çoklu-test, holdout, funnel |
-| 6 | **Tek fikri baştan sona anlat** | Bir hipotezi doğuşundan kararına — sade veya teknik |
+| 4 | Holdout değerlendirmesi | Kabul edilenleri kilitli dönemde tek-atış sınar; geçenler **otomatik ileri-teste** girer ve üç-dönem hükmü basılır |
+| 5 | Dashboard (tarayıcı) | Görsel rapor: **üç-dönem hükmü**, çoklu-test, holdout, funnel |
+| 6 | **Tek fikri baştan sona anlat** | Önce sorar: **bulunan aday** (sicilden, üç-dönem karneli) mı, yeni fikir mi |
 | 7 | **Kıyas (maymun testi)** | random / al-tut / duygusal trader'ı geçiyor muyuz |
-| 8 | Durum / ayarlar | Aktif evren, model, bütçe |
+| 8 | **İleri-test** | Kabul edileni sistemin gördüğü tarihten SONRAKİ taze veride koşar (rejim-bağımlılığı yakalar) |
+| 9 | Durum / ayarlar | Aktif evren, model, bütçe |
+| 0 | Çıkış | |
 
 *(Eski streamlit web arayüzü emekli — `arsiv/`'de; işlevini agent.py + dashboard karşılıyor.)*
 

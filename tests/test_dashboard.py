@@ -49,9 +49,14 @@ def test_generate_dashboard():
         generate_dashboard(db, os.path.join(d, "yok.sqlite"), out, campaign_name="test")
         assert os.path.exists(out)
         content = open(out, encoding="utf-8").read()
-        for token in ["Araştırma Paneli", "En İyi Stratejiler", "Araştırma Hunisi",
-                      "Çoklu Test", "Holdout", "hyp_d1"]:
+        for token in ["Araştırma Paneli", "Kabul Edilen Stratejiler",
+                      "Araştırma Hunisi", "Çoklu Test", "Holdout", "hyp_d1"]:
             assert token in content, f"eksik bölüm: {token}"
+        # ARASTIRMA SHARPE'I KANIT DEGIL: kabul tablosu uc-donem hukmunu de
+        # gostermeli. Olculdu ki en yuksek arastirma Sharpe'li aday taze
+        # veride EN SERT coken oldu; yalniz Sharpe siralamasi yaniltiyordu.
+        assert "Üç-dönem hükmü" in content,             "kabul tablosunda hüküm sütunu yok — yalnız Sharpe sıralaması yanıltır"
+        assert "KANIT DEĞİLDİR" in content,             "araştırma Sharpe'ının kanıt olmadığı uyarısı kayboldu"
         print("  [ok] dashboard tüm bölümlerle üretildi")
 
 

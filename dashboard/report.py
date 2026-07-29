@@ -344,24 +344,60 @@ def _ret_cell(returns_json: "str | None") -> str:
     return f'<td class="num {cls}">{tot:+.0f}%</td>'
 
 
-def _leaderboard(conn) -> str:
+def _leaderboard(conn, holdout_db: "str | None" = None,
+                 memory_db: "str | None" = None) -> str:
+    """Kabul edilenler + ÜÇ-DÖNEM HÜKMÜ.
+
+    Eskiden bu bölüm "En İyi Stratejiler" başlığıyla yalnız ARAŞTIRMA
+    Sharpe'ına göre sıralıyordu. Ölçüldü ki bu yanıltıcı, hatta TERS: en
+    yüksek araştırma Sharpe'lı aday (hyp_0021, +1.14) taze veride EN SERT
+    çöken oldu (-%44); en düşükler en az düştü. Dashboard'ın en üst satırı
+    fiilen en kötü adayı öneriyordu. Artık hüküm sütunu var ve sıralama
+    ÖNCE hükme göre yapılıyor.
+    """
     rows = _q(conn, """SELECT hypothesis_id, title, sharpe, max_drawdown, returns_json
                        FROM experiment
                        WHERE decision='accept' AND sharpe IS NOT NULL
                        ORDER BY sharpe DESC LIMIT 20""")
     if not rows:
         return '<div class="card desc">Bu kampanyada kabul edilen strateji olmadı.</div>'
+
+    from evaluation.three_period import final_verdict
+    hukum = {}
+    if holdout_db and memory_db:
+        for hid, _t, r_sh, h_sh, f_sh in _uc_donem_satirlari(memory_db, holdout_db):
+            hukum[hid] = final_verdict(r_sh, h_sh, f_sh)
+    _SIRA = {"DOĞRULANDI": 0, "EKSİK": 1, "REJİM-BAĞIMLI": 2, "ÇÖKTÜ": 3}
+    _PILL = {"DOĞRULANDI": "good", "REJİM-BAĞIMLI": "warn",
+             "ÇÖKTÜ": "bad", "EKSİK": "muted"}
+    rows = sorted(rows, key=lambda r: (
+        _SIRA.get(hukum[r[0]].verdict, 1) if r[0] in hukum else 1, -(r[2] or 0)))
+
+    def _hukum_hucre(hid):
+        v = hukum.get(hid)
+        if v is None:
+            return '<td><span class="pill muted">SINANMADI</span></td>'
+        return (f'<td><span class="pill {_PILL.get(v.verdict, "muted")}">'
+                f'{_esc(v.verdict)}</span></td>')
+
     body = "".join(
         f"<tr><td>{_esc(h)}</td><td>{_esc(t)}</td>"
         f'<td class="num">{s:.2f}</td>{_ret_cell(rj)}'
-        f'<td class="num">%{(d or 0)*100:.0f}</td></tr>'
+        f'<td class="num">%{(d or 0)*100:.0f}</td>{_hukum_hucre(h)}</tr>'
         for h, t, s, d, rj in rows)
     return ('<div class="card"><table><tr><th>Kimlik</th><th>Strateji</th>'
-            '<th>Sharpe</th><th>Getiri</th><th>Maks. düşüş</th></tr>'
-            + body + "</table></div>"
+            '<th>Araştırma Sharpe</th><th>Getiri</th><th>Maks. düşüş</th>'
+            '<th>Üç-dönem hükmü</th></tr>'
+            + body + "</table>"
+            + '<p class="desc"><b>DİKKAT — bu sütunlar ARAŞTIRMA dönemidir, '
+              'kanıt değildir.</b> Ölçüldü: en yüksek araştırma Sharpe’lı aday '
+              'taze veride EN SERT çöken oldu (−%44); en düşükler en az düştü. '
+              'Sıralama bu yüzden önce üç-dönem hükmüne göredir. Yalnız Sharpe '
+              'sütununa bakıp seçim yapmak, bu projenin engellemek için '
+              'kurulduğu hatanın ta kendisidir.</p></div>'
             + '<div class="desc" style="margin-top:6px">Getiri = araştırma '
-            'döneminde birikimli kazanç (para % kaç değişti). Sharpe = risk başına '
-            'getiri (yüksek iyi). Bunlar araştırma dönemi; kesin yargı holdout.</div>')
+            'döneminde birikimli kazanç (para % kaç değişti). Kesin yargı tek '
+            'bir dönemden değil, ÜÇ dönemin birlikte okunmasından çıkar.</div>')
 
 
 def _multiple_testing(memory_db: str, bars_per_year: int = 252) -> str:
@@ -1054,10 +1090,12 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "/ TEKRAR) ve — reddedildiyse — insan diliyle nedeni yazar. Kabul "
                  "çıkmasa bile sistemin neyi neden elediği buradan net görülür.",
                  _all_hypotheses(conn)),
-        _section("En İyi Stratejiler",
-                 "Tüm süzgeçlerden geçip kabul edilen stratejiler, araştırma dönemi "
-                 "Sharpe oranına göre sıralı.",
-                 _leaderboard(conn)),
+        _section("Kabul Edilen Stratejiler — araştırma dönemi KANIT DEĞİLDİR",
+                 "Süzgeçlerden geçip kabul edilenler. Araştırma Sharpe'ı fikrin "
+                 "GELİŞTİRİLDİĞİ dönemden gelir ve kalite ölçüsü DEĞİLDİR — ölçüldü "
+                 "ki en yüksek Sharpe'lı aday taze veride en sert çöken oldu. "
+                 "Sıralama bu yüzden önce üç-dönem hükmüne göre yapılır.",
+                 _leaderboard(conn, holdout_db, memory_db)),
         _section("Hipotez Detayı — Bir Strateji Neyden İbaret?",
                  "Leaderboard'daki kısa başlık yalnızca etikettir. Her hipotez aslında "
                  "şu zengin içeriği taşır: test edilebilir iddia, ekonomik mekanizma, "
@@ -1081,10 +1119,12 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "olanlar hiçbir boyutta başkasına tümüyle yenik düşmez — reward "
                  "hacking'e karşı ek bir süzgeç.",
                  _pareto(memory_db)),
-        _section("Kilitli Dönem Sınavı (Holdout)",
-                 "Araştırma sırasında hiç görülmeyen, kilitli bir dönemde yapılan son "
-                 "test. Bir stratejinin gerçekten genelleyip genellemediği buradan "
-                 "anlaşılır (araştırma ajanı bu veriye asla erişemez).",
+        _section("Kilitli Dönem Sınavı (Holdout) — TEK BAŞINA yeterli değil",
+                 "Araştırma sırasında hiç görülmeyen kilitli dönemde yapılan test "
+                 "(araştırma ajanı bu veriye asla erişemez). AMA bu tablodaki "
+                 "'GEÇTİ' tek başına okunmamalı: ölçüldü ki holdout'u geçen 3 "
+                 "adayın 3'ü de taze veride çöktü. Nihai hüküm için yukarıdaki "
+                 "'Üç-Dönem Hükmü' bölümüne bakın.",
                  _holdout(holdout_db, memory_db)),
         _section("Aile Performansı — Bütçe Dağılımı",
                  "Her strateji ailesinin kabul/toplam oranı. Sistem araştırma bütçesini "
