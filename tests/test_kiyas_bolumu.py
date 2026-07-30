@@ -157,6 +157,29 @@ def test_iki_sharpe_notu_ARASTIRMA_satirinda_basiliyor():
     print("  [ok] iki-Sharpe notu yalnız ARAŞTIRMA satırında basılıyor")
 
 
+def test_eksik_donemli_kosu_dashboardu_sessizce_bosaltmaz():
+    """Kısa kıyas koşusu, 3 dönemlik ölçümü SESSİZCE silmemeli.
+
+    `benchmark.py` (--ileri olmadan) 2 dönem üretir ve benchmark.json'u ezer.
+    Dashboard'da 3 dönemlik bir ölçüm varsa İLERİ-TEST satırı kaybolur ve
+    kimse fark etmez — dashboard "al-tut'u geçemiyoruz" derken, geçtiğimiz
+    dönemi gösteren satır yok olur. Kaybı önleyemeyiz (kullanıcı bu koşuyu
+    istedi) ama SESSİZ olmasını önleriz: dosya adı değişir, uyarı basılır.
+    """
+    import inspect
+
+    from scripts import benchmark
+    src = inspect.getsource(benchmark.main)
+    assert "benchmark_onceki.json" in src, \
+        "eksik dönemli koşu eski ölçümü yedeklemiyor (sessiz kayıp)"
+    assert "ICERMIYOR" in src or "kaybolan" in src, \
+        "dönem kaybı kullanıcıya bildirilmiyor"
+    # Uyarı P() ile basılmalı: yalnız log'a değil KONSOLA da gitsin.
+    assert "P(f\"\\n  ⚠ DIKKAT" in src or "⚠ DIKKAT" in src, \
+        "uyarı görünür biçimde basılmıyor"
+    print("  [ok] eksik dönemli koşu eski ölçümü yedekliyor + uyarıyor")
+
+
 def main() -> None:
     test_arastirma_donemi_HUKME_katilmaz()
     test_arastirma_satiri_kanit_degil_diye_isaretli()
@@ -166,6 +189,7 @@ def main() -> None:
     test_olcum_tarihi_damgasi_var()
     test_bozuk_dosya_dashboardu_cokertmez()
     test_iki_sharpe_notu_ARASTIRMA_satirinda_basiliyor()
+    test_eksik_donemli_kosu_dashboardu_sessizce_bosaltmaz()
     print("OK — kıyas bölümü raporda var ve araştırma dönemini kanıt saymıyor.")
 
 

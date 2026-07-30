@@ -437,8 +437,30 @@ def main() -> None:
              "maymun_yuzdeligi": y["pctile"], "gecti": _gecti(y)}
             for ad, y in donemler],
     }
-    with open(os.path.join(HERE, "runs", "benchmark.json"), "w",
-              encoding="utf-8") as f:
+    # KISA KOSU, TAM OLCUMU SESSIZCE SILMESIN. `--ileri` olmadan kosmak 2
+    # donem uretir; dashboard'da 3 donemlik bir olcum varsa o dosyayi ezmek
+    # ILERI-TEST satirini kaybettirir ve kimse fark etmez. Kaybi ONLEYEMEYIZ
+    # (kullanici bu kosuyu istedi) ama SESSIZ olmasini onleyebiliriz: eski
+    # dosya yedeklenir ve nasil geri gelinecegi soylenir.
+    jpath = os.path.join(HERE, "runs", "benchmark.json")
+    if os.path.exists(jpath):
+        try:
+            with open(jpath, encoding="utf-8") as f:
+                eski = _json.load(f)
+            eski_oos = {p["ad"] for p in eski.get("donemler", []) if p.get("oos")}
+            yeni_oos = {p["ad"] for p in ozet["donemler"] if p["oos"]}
+            kaybolan = eski_oos - yeni_oos
+            if kaybolan:
+                yedek = os.path.join(HERE, "runs", "benchmark_onceki.json")
+                os.replace(jpath, yedek)
+                P(f"\n  ⚠ DIKKAT: bu kosu {', '.join(sorted(kaybolan))} donemini")
+                P("    ICERMIYOR. Onceki (daha kapsamli) olcum silinmedi:")
+                P(f"      {yedek}")
+                P("    Dashboard artik o donemi GOSTERMEYECEK. Geri getirmek icin:")
+                P("      python scripts/benchmark.py --ileri --log")
+        except (ValueError, OSError):
+            pass          # bozuk/okunamaz eski dosya yeni yazimi engellemez
+    with open(jpath, "w", encoding="utf-8") as f:
         _json.dump(ozet, f, ensure_ascii=False, indent=2)
 
     if _WRITE:
