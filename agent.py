@@ -87,11 +87,13 @@ _GRUPLAR = [
          "Motoru saf-NumPy ve Excel'le karşılaştırır; PnL zincirini gün gün açar.",
          ["scripts/verify_sharpe.py"]),
         ("t", "Bütün testleri koş",
-         "45 test dosyası: sızıntı, ödül-hackleme, ısınma, hizalama, PIT veri.",
+         "48 test dosyası: sızıntı, ödül-hackleme, ısınma, hizalama, PIT "
+         "veri, aday seçimi, para-güvenliği.",
          ["-m", "tests.run_all"]),
-        ("k", "LLM karşılaştırması",
-         "5 modeli aynı veri/bütçeyle yarıştırır: hangisi daha iyi hipotez üretir.",
-         ["compare.py"]),
+        ("k", "Üretici karşılaştırması (LLM vs rastgele)",
+         "Aynı veri/bütçeyle yarıştırır. Bedava mod: 'LLM rastgeleden iyi mi?' "
+         "(bilimsel kontrol). Tam mod ücretli modelleri de katar.",
+         "COMPARE"),
         ("d", "Durum / ayarlar",
          "Aktif evren, model, bütçe, tarih aralığı (configs/*.yaml).",
          "STATUS"),
@@ -368,6 +370,30 @@ def main() -> None:
             args = ["scripts/benchmark.py", "--log"]
             if ileri == "e":
                 args.append("--ileri")
+            _run(console, args)
+        elif action == "COMPARE":
+            # PARA HARCAMA KARARI KULLANICININ. Varsayılan BEDAVA: tam koşu
+            # ~$2 API kredisi yakar ve bunu habersiz yapmak geri alınamaz.
+            # Bilimsel kontrol ("LLM rastgeleden iyi mi?") zaten bedava
+            # yarışmacılarla ölçülüyor — asıl soru için para gerekmiyor.
+            mod = Prompt.ask(
+                "Hangi yarışmacılar? (b = yalnız BEDAVA [baseline'lar + ücretsiz "
+                "modeller], t = TAMAMI — ücretli modeller dahil, ~$2 API kredisi)",
+                choices=["b", "t"], default="b")
+            args = ["compare.py"]
+            if mod == "b":
+                args.append("--bedava")
+            else:
+                ok = Prompt.ask("[yellow]Ücretli modeller koşacak, API kredisi "
+                                "harcanacak. Emin misin?[/yellow]",
+                                choices=["e", "h"], default="h")
+                if ok != "e":
+                    continue
+            hizli = Prompt.ask(
+                "Kaç seed? (3 = tek seed [hızlı deneme], u = üçü [3,5,7 — "
+                "varyansı gösterir, 3 kat sürer])", choices=["3", "u"], default="3")
+            if hizli == "3":
+                args += ["--seeds", "3"]
             _run(console, args)
         elif action == "FORWARD":
             _run(console, ["scripts/forward_test.py", "--log"])

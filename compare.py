@@ -2,15 +2,26 @@
 Model karşılaştırma koşucusu (Doküman 15/26 — "hangi LLM daha iyi arıyor?").
 
 Aynı kampanya kısıtları + aynı veri + aynı deney bütçesi altında birden çok
-LLM'i (configs/compare.yaml: 5 model — 2 bedava + 2 ucuz + 1 orta) yarıştırır ve
-ARAŞTIRMA VERİMLİLİĞİ tablosu üretir. Ölçülen şey "en iyi Sharpe" değil
-(NOT: random-search/GP baseline'ları çıkarıldı; "LLM random'dan iyi mi" bilimsel
-kontrolü için compare.yaml yorumundaki satırı geri ekle.)
-(Doküman 26): kabul oranı, tekrar oranı, derleme hatası, çoklu-test sonrası
-en iyi DSR, deney başına token maliyeti.
+hipotez üreticisini yarıştırır ve ARAŞTIRMA VERİMLİLİĞİ tablosu üretir.
+Ölçülen şey "en iyi Sharpe" DEĞİL (Doküman 26): yapısal isabet oranı, keşif
+hızı, kabul/tekrar oranı, çoklu-test sonrası en iyi DSR, token maliyeti.
+
+configs/compare.yaml iki AYRI soruyu cevaplayan iki grup içerir:
+    (A) LLM'siz baseline'lar (random-search / GP / bayes-opt) — BEDAVA
+        "LLM gerçekten arıyor mu, rastgeleden iyi mi?" (Deney A)
+    (B) LLM'ler — ~$2/koşu
+        "hangi model daha iyi hipotez üretiyor?" (model seçimi)
 
 Kullanım:
-    python compare.py                 # configs/compare.yaml'daki yarışmacılar
+    python compare.py                       # hepsi (ücretli modeller DAHİL)
+    python compare.py --bedava              # yalnız (A) + ücretsiz modeller
+    python compare.py --sadece random-search,deepseek-r1-GUCLU-UCUZ
+    python compare.py --seeds 3             # tek seed (hızlı deneme)
+
+TEK KOŞU KURALI: aynı anda iki karşılaştırma koşulamaz (runs/.compare.lock).
+Yarışmacı hafızaları etiket+seed'den türer ve her yarışmacıda silinip yeniden
+kurulur; iki koşu üst üste binerse biri diğerinin veritabanını ortasında siler
+ve sonuç ÇÖKME değil KARIŞMIŞ ÖLÇÜM olur (canlı yaşandı).
 
 Adalet kuralları:
   - Her yarışmacıya AYRI, TAZE hafıza (runs/compare_<label>.sqlite).
@@ -243,6 +254,50 @@ def print_curves(results: list[ContestantResult]) -> None:
           "en verimli kullanan modeldir.")
 
 
+class _Kilit:
+    """Aynı anda İKİ karşılaştırma koşusunu engelle.
+
+    Neden gerekli (canlı yaşandı): yarışmacı hafıza dosyaları etiket+seed'den
+    türetilir (runs/compare_<label>_s<seed>.sqlite) ve `run_contestant` her
+    yarışmacıda dosyayı SİLİP yeniden kurar. İki koşu üst üste binerse biri
+    diğerinin veritabanını ORTASINDA siler; sonuç çökme değil, KARIŞMIŞ
+    ÖLÇÜMdür — tablo normal görünür ama sayılar iki koşunun karışımıdır.
+    Bu, projede en çok uğraşılan hata sınıfının (sessizce yanlış sonuç) tam
+    örneği; bu yüzden kilit çökerterek değil, açık mesajla reddediyor.
+    """
+
+    def __init__(self, yol: str) -> None:
+        self._yol = yol
+        self._fh = None
+
+    def __enter__(self):
+        import errno
+        try:
+            # O_EXCL: dosya varsa YARATMAZ, hata verir (atomik).
+            fd = os.open(self._yol, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+            raise SystemExit(
+                f"Başka bir karşılaştırma koşusu sürüyor gibi görünüyor.\n"
+                f"  Kilit: {self._yol}\n"
+                f"İki koşu aynı hafıza dosyalarını paylaşır ve birbirinin "
+                f"ölçümünü bozar (çökme olmaz — sayılar karışır).\n"
+                f"Gerçekten koşan bir süreç yoksa kilidi sil ve tekrar dene.")
+        self._fh = fd
+        os.write(fd, f"pid={os.getpid()}\n".encode())
+        return self
+
+    def __exit__(self, *_exc):
+        if self._fh is not None:
+            os.close(self._fh)
+        try:
+            os.remove(self._yol)
+        except OSError:
+            pass
+        return False
+
+
 def run_contestant(contestant: dict, data, cfg, critic, db_path: str,
                    target: "dict | None" = None) -> ContestantResult:
     """Tek yarışmacıyı taze hafızayla koştur, metrikleri topla."""
@@ -405,7 +460,14 @@ def main() -> None:
 
     out_dir = os.path.join(HERE, comp.get("output_dir", "runs"))
     os.makedirs(out_dir, exist_ok=True)
+    # Tek koşu kuralı: yarışmacı hafızaları etiket+seed'den türer, iki koşu
+    # birbirinin ölçümünü sessizce bozar (bkz. _Kilit).
+    with _Kilit(os.path.join(out_dir, ".compare.lock")):
+        _kosu(comp, campaign, data_cfg, cfg, out_dir)
 
+
+def _kosu(comp, campaign, data_cfg, cfg, out_dir) -> None:
+    """Karşılaştırmanın gövdesi (kilit ALTINDA çağrılır)."""
     # Critic: adalet için varsayılan dummy; istenirse models.yaml'daki kullanılır.
     if comp.get("critic") == "models_yaml":
         from llm import make_critic

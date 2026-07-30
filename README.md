@@ -40,7 +40,7 @@ scripts/      # şeffaflık araçları: anatomi, benchmark, Sharpe doğrulama
 python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ./.venv/Scripts/python.exe -m tests.test_contracts_smoke   # duman testi
-./.venv/Scripts/python.exe -m tests.run_all                # BÜTÜN testler (47)
+./.venv/Scripts/python.exe -m tests.run_all                # BÜTÜN testler (48)
 ```
 
 ## Yol haritası (walking skeleton)
@@ -85,11 +85,22 @@ tek tek `dummy → gerçek` yap. Baştan gerçek yapılacak iki şey:
   `index_membership` maskesiyle hisseyi yalnızca üye olduğu günlerde işleme sokar.
   Kalan dürüst sınırlar: Yahoo'da verisi hiç olmayan delist ticker'lar (yüklemede
   raporlanır) ve delisting return modeli yok — tam çözüm CRSP ister.
-- [x] Model karşılaştırma koşucusu (`python compare.py`) — aynı veri/bütçe/kısıtlarla
-  N üreticiyi (LLM'ler + random baseline) yarıştırır; araştırma-verimliliği tablosu
-  (kabul, tekrar, derleme hatası, en iyi DSR, FDR, token) + `runs/comparison.md`.
-  Yarışmacılar `configs/compare.yaml`'da. Critic varsayılan dummy (adalet),
-  literatür kapalı (varyans), holdout'a dokunulmaz.
+- [x] Üretici karşılaştırma koşucusu (`python compare.py`) — aynı veri/bütçe/kısıtlarla
+  N üreticiyi yarıştırır; araştırma-verimliliği tablosu (yapısal isabet, keşif
+  hızı, kabul, tekrar, en iyi DSR, FDR, token) + `runs/comparison.md`.
+  Critic varsayılan dummy (adalet), literatür kapalı (varyans), holdout'a
+  dokunulmaz. Yarışmacılar `configs/compare.yaml`'da ve **iki ayrı soruyu**
+  cevaplayan iki gruba ayrılmış:
+  - **(A) bilimsel kontrol** — `random-search` / `genetic-programming` /
+    `bayesian-opt`. LLM'siz, aynı pipeline, aynı bütçe. *"LLM gerçekten arıyor
+    mu?"* **BEDAVA.** `python compare.py --bedava`
+  - **(B) model seçimi** — 5 LLM. *"hangi model daha iyi hipotez üretiyor?"*
+    **~$2/koşu** (3 ücretli). Koşu başında açıkça uyarılır; `cost` etiketi
+    yazılmamış yarışmacı **ücretli varsayılır** (habersiz kredi harcamamak için).
+  - Aynı anda **iki koşu engellenir** (`runs/.compare.lock`): yarışmacı
+    hafızaları etiket+seed'den türer ve her yarışmacıda silinip yeniden kurulur,
+    üst üste binen iki koşu birbirinin ölçümünü **sessizce karıştırır**
+    (çökme olmaz — canlı yaşandı).
 - [x] Revision karantinası — revizyonları 3+ kez duplicate üretmiş champion
   revision için karantinaya alınır (komşuluk tükendi); sıradaki kabule geçilir.
 - [x] Kripto adaptörü (Binance perpetual: OHLCV + funding rate; survivorship-düzeltmeli — ölü coinler dahil)
@@ -235,7 +246,7 @@ veri indirmez. Menü, "hangi soruyu cevaplıyor" mantığına göre gruplu:
 | # | Menü | Ne yapar |
 |---|------|----------|
 | 9 | **Sharpe gerçekten doğru mu?** | Motoru saf-NumPy ve Excel'le karşılaştırır; PnL zincirini gün gün açar |
-| t | **Bütün testleri koş** | 47 test: sızıntı, ödül-hackleme, ısınma, hizalama, PIT veri, aday seçimi |
+| t | **Bütün testleri koş** | 48 test: sızıntı, ödül-hackleme, ısınma, hizalama, PIT veri, aday seçimi |
 | k | LLM karşılaştırması | 5 modeli aynı veri/bütçeyle yarıştırır |
 | d | Durum / ayarlar | Aktif evren, model, bütçe, **işlem maliyeti**, tarih aralığı |
 | 0 | Çıkış | |
