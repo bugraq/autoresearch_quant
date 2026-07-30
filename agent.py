@@ -62,7 +62,7 @@ _GRUPLAR = [
          "Hocanın başarı ölçütü. Her dönemde ayrı yarış + geçme matrisi.",
          "BENCHMARK"),
         ("3", "Dashboard'u aç (tarayıcı)",
-         "Görsel rapor: leaderboard, çoklu-test, holdout, huni.",
+         "Görsel rapor: kıyas, üç-dönem hükmü, çoklu-test, holdout, huni.",
          "DASHBOARD"),
         ("4", "Tek fikri baştan sona anlat",
          "BİR stratejiyi doğuşundan kararına izle. Sade veya teknik.",
@@ -244,7 +244,12 @@ def _show_karne(console) -> None:
     console.print(verdict_table(satirlar))
     console.print("\n[dim]DOĞRULANDI = iki bağımsız OOS döneminde de ayakta kaldı "
                   "('alpha bulundu' demek DEĞİL).\n"
-                  "REJİM-BAĞIMLI = bir dönemde tuttu, diğerinde çöktü.[/dim]\n")
+                  "REJİM-BAĞIMLI = bir dönemde tuttu, diğerinde çöktü.[/dim]")
+    # Buradaki araştırma sütunu FOLD ORTALAMASI; kıyas ekranı TÜM DÖNEM
+    # gösterir ve sayılar tutmaz (ölçüldü: 0.66 vs 0.74). Açıklama tek
+    # kaynaktan gelir ki iki ekran aynı cümleyi göstersin.
+    from evaluation.plain import IKI_SHARPE_NOTU
+    console.print(f"[dim]{IKI_SHARPE_NOTU}[/dim]\n")
     for a in tum_adaylar():
         v = a.hukum()
         console.print(f"  [bold]{a.hypothesis_id}[/bold] — {a.title[:60]}")

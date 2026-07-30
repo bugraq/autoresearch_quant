@@ -16,6 +16,31 @@ teknik jargonla gizlemekten daha kötüdür — çünkü okuyan anladığını s
 """
 from __future__ import annotations
 
+#: İKİ FARKLI ARAŞTIRMA SHARPE'I VAR ve ikisi de doğru — ama yan yana
+#: görülünce çelişki gibi durur. Ölçüldü (hyp_0033): karne +0.66, kıyas +0.74.
+#:
+#:   fold ortalaması  : araştırma dönemi 5 walk-forward dilime bölünür, her
+#:                      dilimin Sharpe'ı ayrı hesaplanıp ORTALANIR. Kabul
+#:                      kapısının ve hafızanın kullandığı sayı budur; daha
+#:                      muhafazakârdır (kötü bir dilim ortalamayı aşağı çeker).
+#:   tüm dönem        : araştırma serisi TEK PARÇA olarak ölçülür. Kıyas bunu
+#:                      kullanmak ZORUNDA: al-tut ve rastgele al-satçı da tek
+#:                      parça ölçülüyor; fold'lanmış bir sayıyla onlara karşı
+#:                      koymak elma-armut olurdu.
+#:
+#: HOLDOUT ve İLERİ-TEST'te böyle bir ikilik YOKTUR (tek dilim olarak
+#: değerlendirilirler) — bu yüzden o sayılar her araçta birebir aynıdır.
+#: Metin tek yerde durur ki iki araç aynı cümleyi göstersin.
+IKI_SHARPE_NOTU = (
+    "Not: araştırma Sharpe'ı iki şekilde ölçülebilir — walk-forward fold "
+    "ORTALAMASI (karne/dashboard; kabul kapısının kullandığı, daha "
+    "muhafazakâr) ve TÜM DÖNEM tek parça (kıyas; al-tut/rastgele de böyle "
+    "ölçüldüğü için adil karşılaştırma bunu gerektirir). İkisi de doğrudur, "
+    "aynı şeyin iki ölçüsüdür. HOLDOUT ve İLERİ-TEST'te bu ikilik yoktur: "
+    "o sayılar her araçta birebir aynıdır."
+)
+
+
 # ── Terim sözlüğü: teknik ad -> (trader dili, tek cümle açıklama) ──────
 TERIMLER: "dict[str, tuple[str, str]]" = {
     "sharpe": (

@@ -423,6 +423,29 @@ def run_holdout_mode(campaign: dict, cfg: CampaignConfig, holdout_data,
             for h, a, b in dusenler:
                 print(f"      {h}: {a:+.2f} -> {b:+.2f}  "
                       f"(fark {b-a:+.2f} = geçmişe aşırı uyum işareti)")
+    else:
+        # HİÇ YENİ DEĞERLENDİRME OLMADI (hepsi one-shot'tan atlandı). Bu, en SIK
+        # karşılaşılan durumdur — holdout bir kez koşulduktan sonra her tekrar
+        # buraya düşer. Eskiden ekran burada BOMBOŞ kalıyordu: kullanıcı
+        # "Holdout sınavı"nı seçip üç satır "atlandı" görüyor, ne eski sonuçları
+        # ne hükmü öğrenemiyordu. Yeni sınav yapılamıyorsa MEVCUT SİCİL basılır.
+        from evaluation.aday import karne_satirlari, tum_adaylar
+        from evaluation.three_period import verdict_table
+
+        satirlar = karne_satirlari(cfg.min_acceptance_sharpe)
+        print("\n  Yeni değerlendirme yapılmadı (adayların hepsi zaten "
+              "sınanmış — one-shot).")
+        if satirlar:
+            print("  MEVCUT SİCİL (kayıtlı sonuçlar):\n")
+            print(verdict_table(satirlar, cfg.min_acceptance_sharpe))
+            gecen = sum(1 for a in tum_adaylar(cfg.min_acceptance_sharpe)
+                        if a.hukum(cfg.min_acceptance_sharpe).passed)
+            print(f"\n  Üç dönemi de geçen aday: {gecen}/{len(satirlar)}")
+            print("  Yeniden sınamak için gerekçeli geçersiz kılma gerekir:")
+            print("    python main.py --holdout --holdout-invalidate \"GEREKÇE\"")
+            print("  (Kayıt SİLİNMEZ; gerekçe ve tarihle audit'te kalıcı durur.)")
+        else:
+            print("  Sicilde kayıtlı sonuç da yok — önce bir kampanya koş.")
     holdout.close()
     memory.close()
 

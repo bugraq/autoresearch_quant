@@ -114,6 +114,49 @@ def test_bozuk_dosya_dashboardu_cokertmez():
     print("  [ok] bozuk kıyas dosyası dashboard'u çökertmiyor")
 
 
+def test_iki_sharpe_notu_ARASTIRMA_satirinda_basiliyor():
+    """Kıyas ekranındaki araştırma Sharpe'ı karnedekiyle TUTMAZ — açıklanmalı.
+
+    Ölçüldü (hyp_0033): karne +0.66 (walk-forward fold ortalaması, hafızada
+    saklanan), kıyas +0.74 (tüm dönem tek parça). İkisi de doğru, farklı
+    ölçüler. Ama aynı stratejinin iki ekranda iki sayı göstermesi bu projede
+    tekrar tekrar çıkan hata sınıfıdır; açıklama olmadan bırakılamaz.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    from evaluation.plain import IKI_SHARPE_NOTU
+    from scripts.benchmark import _donem_tablosu
+
+    y = {"bpy": 1095, "aralik": "2020-01-01→2023-07-02", "bars": 3835,
+         "bh": {"sharpe": .88, "yillik": .85, "toplam": 2.67, "maxdd": .86},
+         "psy": {"sharpe": -7., "yillik": -1.9, "toplam": -.99, "maxdd": 1.},
+         "our": {"sharpe": .74, "yillik": .18, "toplam": .69, "maxdd": .36},
+         "our_free": 1.23, "m_sh_med": -10.2, "m_sh_best": -8.9,
+         "m_tot_med": -.99, "m_sh_med_free": -.07, "m_sh_best_free": 1.1,
+         "pctile": 100., "pctile_free": 100.}
+
+    def yakala(ad):
+        b = io.StringIO()
+        with redirect_stdout(b):
+            _donem_tablosu(ad, y, 60)
+        return b.getvalue()
+
+    arastirma = yakala("ARASTIRMA (in-sample — kanit DEGIL)")
+    holdout = yakala("HOLDOUT (kilitli, *OOS)")
+
+    ilk_cumle = IKI_SHARPE_NOTU.split("—")[0].strip()
+    assert ilk_cumle in " ".join(arastirma.split()), (
+        "araştırma satırında iki-Sharpe notu basılmıyor — karnedeki +0.66 ile "
+        "buradaki +0.74 açıklanmadan yan yana duruyor")
+    # HOLDOUT'ta ikilik YOK (tek dilim): not orada basılmamalı, yoksa
+    # olmayan bir belirsizlik uydurulmuş olur.
+    assert ilk_cumle not in " ".join(holdout.split()), (
+        "not HOLDOUT satırında da basılıyor — orada iki ölçü YOK, "
+        "sayılar her araçta birebir aynı")
+    print("  [ok] iki-Sharpe notu yalnız ARAŞTIRMA satırında basılıyor")
+
+
 def main() -> None:
     test_arastirma_donemi_HUKME_katilmaz()
     test_arastirma_satiri_kanit_degil_diye_isaretli()
@@ -122,6 +165,7 @@ def main() -> None:
     test_olcum_yoksa_sessiz_gecilmez()
     test_olcum_tarihi_damgasi_var()
     test_bozuk_dosya_dashboardu_cokertmez()
+    test_iki_sharpe_notu_ARASTIRMA_satirinda_basiliyor()
     print("OK — kıyas bölümü raporda var ve araştırma dönemini kanıt saymıyor.")
 
 

@@ -242,6 +242,13 @@ def _donem_tablosu(ad: str, y: dict, monkeys: int) -> None:
     row("Psikolojik (duygusal) trader", y["psy"])
     P(f"  {'-'*34} {'-'*8} {'-'*9} {'-'*9} {'-'*7}")
     row("BIZIM STRATEJI", y["our"])
+    if "ARASTIRMA" in ad:
+        # Bu satirdaki sayi karnedeki arastirma Sharpe'iyla TUTMAZ (olculdu:
+        # 0.74 vs 0.66) cunku ikisi farkli olculer. Sessiz birakmak, ayni
+        # stratejinin iki yerde iki sayi gostermesi demek olurdu.
+        from evaluation.plain import _sar, IKI_SHARPE_NOTU
+        for parca in _sar(IKI_SHARPE_NOTU, 72):
+            P(f"  {parca}")
     P(f"\n  Masrafsiz kontrol (masraf=0, 'gercek sinyal mi?' testi):"
       f"  maymun ortanca {y['m_sh_med_free']:+.2f} | bizim {y['our_free']:+.2f}"
       f"  → maymunlarin %{y['pctile_free']:.0f}'inden iyi")

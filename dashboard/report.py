@@ -499,9 +499,15 @@ def _kiyas(runs_dir: "str | None" = None) -> str:
                      "Yine de bu 'alpha' demek değildir — üç-dönem hükmü ve "
                      "çoklu-test düzeltmesi ayrıca geçerli olmalı.")
 
+    # ARAŞTIRMA SÜTUNU BU TABLODA "TÜM DÖNEM", ÜÇ-DÖNEM TABLOSUNDA "FOLD
+    # ORTALAMASI" ölçüsüdür (ölçüldü: 0.74 vs 0.66). İkisi de doğru ama aynı
+    # sayfada yan yana durdukları için açıklanmadan bırakılamaz — yoksa okuyan
+    # "hangisi gerçek?" der. Metin tek kaynaktan (evaluation/plain.py).
+    from evaluation.plain import IKI_SHARPE_NOTU
     return (ust + '<div class="card"><table class="tbl">' + bas
             + "".join(satirlar) + "</table></div>"
-            + f'<div class="desc">{okuma}</div>')
+            + f'<div class="desc">{okuma}</div>'
+            + f'<div class="desc">{_esc(IKI_SHARPE_NOTU)}</div>')
 
 
 def _leaderboard(conn, holdout_db: "str | None" = None,
