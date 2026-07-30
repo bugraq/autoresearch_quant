@@ -302,12 +302,73 @@ _NOTR_EVREN = (
     "alanlarını kullan; listede olmayan bir alana dayanan fikirler elenir.")
 
 
+def _filtrele(contestants: list, sadece: "str | None",
+              bedava: bool) -> list:
+    """Yarışmacı listesini süz. Neden gerekli:
+
+    Liste iki AYRI soruyu cevaplayan iki grup içerir (bkz. compare.yaml):
+    LLM'siz baseline'lar "LLM gerçekten arıyor mu?" (BEDAVA), LLM'ler ise
+    "hangi model daha iyi?" (~$2/koşu, 3 ücretli model). Tümünü koşmak
+    zorunda kalmak, bilimsel kontrolü ölçmek isteyeni para harcamaya
+    mecbur ediyordu — bu yüzden çoğu koşuda baseline'lar hiç koşulmuyordu.
+    """
+    if sadece:
+        istenen = [s.strip() for s in sadece.split(",") if s.strip()]
+        secili = [c for c in contestants if c.get("label") in istenen]
+        bulunamayan = set(istenen) - {c.get("label") for c in secili}
+        if bulunamayan:
+            mevcut = ", ".join(c.get("label", "?") for c in contestants)
+            raise SystemExit(f"Bilinmeyen yarışmacı: {', '.join(sorted(bulunamayan))}\n"
+                             f"Mevcut: {mevcut}")
+        return secili
+    if bedava:
+        # `cost` YAZILMAMIŞSA ücretli varsayılır: eksik etiket yüzünden
+        # habersiz para harcamak, fazladan bir yarışmacıyı atlamaktan kötüdür.
+        return [c for c in contestants if c.get("cost") == "free"]
+    return list(contestants)
+
+
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Hipotez üreticilerini aynı veri/bütçeyle yarıştır.")
+    ap.add_argument("--bedava", action="store_true",
+                    help="Yalnız BEDAVA yarışmacılar (LLM'siz baseline'lar + "
+                         "ücretsiz modeller). 'LLM rastgeleden iyi mi?' "
+                         "sorusunu para harcamadan ölçer.")
+    ap.add_argument("--sadece", metavar="ETIKET[,ETIKET]",
+                    help="Yalnız bu etiketli yarışmacılar koşsun.")
+    ap.add_argument("--seeds", metavar="N[,N]",
+                    help="compare.yaml'daki seed listesini EZ (hızlı deneme için).")
+    args = ap.parse_args()
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
     load_dotenv(os.path.join(HERE, ".env"))
     campaign = load_yaml("campaign.yaml")["campaign"]
     data_cfg = load_yaml("data.yaml")["data"]
     comp = load_yaml("compare.yaml")["compare"]
     cfg = build_config(campaign)
+
+    comp = {**comp, "contestants": _filtrele(comp["contestants"], args.sadece,
+                                             args.bedava)}
+    if not comp["contestants"]:
+        raise SystemExit("Filtre hiçbir yarışmacı bırakmadı — koşacak bir şey yok.")
+    if args.seeds:
+        comp = {**comp, "seeds": [int(s) for s in args.seeds.split(",")]}
+    _paid = [c["label"] for c in comp["contestants"] if c.get("cost") != "free"]
+    print(f"[compare] {len(comp['contestants'])} yarışmacı: "
+          + ", ".join(c.get("label", "?") for c in comp["contestants"]))
+    if _paid:
+        # PARA HARCANACAĞI ÖNCEDEN SÖYLENİR. Sessizce token yakmak, bütçesi
+        # olan biri için geri alınamaz bir sürprizdir.
+        print(f"[compare] ÜCRETLİ model(ler) var: {', '.join(_paid)} "
+              f"— API kredisi harcanacak. Yalnız bedavalar: --bedava")
+    else:
+        print("[compare] hepsi BEDAVA (API kredisi harcanmaz).")
 
     # BÜTÇE: karşılaştırma çok koşu yapar (yarışmacı × seed) → ayrı, küçük bütçe.
     if comp.get("budget_override"):

@@ -59,12 +59,48 @@ compare:
   # seçimi). Fiyatlar OpenRouter /models API'den (2026-07) doğrulandı; tahmini toplam
   # ~$2/koşu. Bedava modeller rate-limit (429) yiyebilir → bazı deneyler atlanır.
   #
-  # ⚠ BASELINE UYARISI: random-search + genetic-programming ÇIKARILDI. Onlar
-  # "LLM gerçekten arıyor mu, rastgeleden iyi mi?" bilimsel kontrolüydü (Deney A).
-  # Sadece LLM'ler yarışınca bu iddia ölçülemez — yalnız "en iyi LLM hangisi"
-  # bilinir. Bilimsel kontrolü geri istersen: `- {label: random-search, provider:
-  # random, seed: 0}` ekle.
+  # ⚠ İKİ AYRI SORU, İKİ AYRI YARIŞMACI GRUBU. Karıştırılmamalı:
+  #
+  #   A) "LLM GERÇEKTEN ARIYOR MU?"  -> baseline'lar gerekir (Deney A).
+  #      LLM'siz arayıcılar aynı pipeline'dan, aynı bütçeyle geçer. LLM bunları
+  #      geçemiyorsa "LLM katkısı yok" demektir — projenin ANA iddiası budur.
+  #      BEDAVA: API çağrısı yok, saniyeler sürer.
+  #
+  #   B) "HANGİ LLM DAHA İYİ?"  -> yalnız LLM'ler yarışır (model seçimi).
+  #      PARALI: ~$2/koşu (3 ücretli model).
+  #
+  # Baseline'lar bir süre listeden ÇIKARILMIŞTI; o hâlde koşu yalnız (B)'yi
+  # ölçüyor ama tablo (A)'yı ölçüyormuş gibi okunabiliyordu. Geri konuldu.
+  # Sadece birini koşmak için: `python compare.py --bedava` (yalnız bedava
+  # yarışmacılar) veya `--sadece random-search,deepseek-r1-GUCLU-UCUZ`.
   contestants:
+    # ─── (A) BİLİMSEL KONTROL — LLM'siz alt çıtalar, hepsi BEDAVA ───
+    # cost: free  (aşağıdaki `cost` alanı --bedava filtresini besler)
+
+    # Rastgele arama: ekonomik gerekçe YOK, hafızadan öğrenme YOK.
+    # En düşük çıta. LLM bunu geçemiyorsa hipotez üretimi işe yaramıyor.
+    - label: random-search
+      provider: random
+      seed: 0
+      cost: free
+
+    # Genetik programlama: fitness'a göre evrimleşen DSL ağaçları
+    # (crossover + mutasyon). Random'dan GÜÇLÜ alt çıta — "arama" yapıyor
+    # ama fikri yok. LLM'in ekonomik gerekçesinin değer katıp katmadığını
+    # ayırt eden asıl karşılaştırma budur.
+    - label: genetic-programming
+      provider: gp
+      seed: 0
+      cost: free
+
+    # Bayes optimizasyonu (TPE): sabit şablonların hiperparametrelerini
+    # fitness modelleyerek arar. "Akıllı parametre araması" çıtası.
+    - label: bayesian-opt
+      provider: bayesopt
+      seed: 0
+      cost: free
+
+    # ─── (B) MODEL SEÇİMİ — LLM'ler ───
     # ⚠ BEDAVA SLUG'LAR ÖLÜYOR: 22.07.2026'da `tencent/hy3:free` ücretliye
     # çevrildi, `meta-llama/llama-3.3-70b-instruct:free` kaldırıldı. İkisi de
     # aşağıdaki hâlâ-bedava modellerle değiştirildi. Koşudan önce kontrol:
@@ -76,6 +112,7 @@ compare:
       model: nvidia/nemotron-3-ultra-550b-a55b:free
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.9
+      cost: free
 
     # 2) ÜCRETSİZ #2 — küçük/hızlı açık model (Google Gemma)
     - label: gemma31b-free-BEDAVA
@@ -83,6 +120,7 @@ compare:
       model: google/gemma-4-31b-it:free
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.9
+      cost: free
 
     # 3) ÇOK UCUZ — 120B açık model, cüzi fiyat (~$0.02/koşu; OpenAI oss)
     - label: gptoss120b-COK-UCUZ
@@ -90,6 +128,7 @@ compare:
       model: openai/gpt-oss-120b
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.9
+      cost: paid
 
     # 4) GÜÇLÜ UCUZ — reasoning modeli, düşük fiyat (~$0.32/koşu; DeepSeek R1)
     - label: deepseek-r1-GUCLU-UCUZ
@@ -97,6 +136,7 @@ compare:
       model: deepseek/deepseek-r1-0528
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.9
+      cost: paid
 
     # 5) ORTA (~$2'ye en iyi f/p) — 2026 üst Gemini pro (~$1.6/koşu; Google)
     - label: gemini31pro-ORTA
@@ -104,6 +144,7 @@ compare:
       model: google/gemini-3.1-pro-preview
       api_key_env: OPENROUTER_API_KEY
       temperature: 0.9
+      cost: paid
 
   critic: dummy            # dummy | models_yaml (models.yaml'daki critic'i kullan)
   output_dir: runs         # yarışmacı başına ayrı hafıza DB'si buraya yazılır
