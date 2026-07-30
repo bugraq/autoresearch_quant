@@ -157,6 +157,41 @@ def test_iki_sharpe_notu_ARASTIRMA_satirinda_basiliyor():
     print("  [ok] iki-Sharpe notu yalnız ARAŞTIRMA satırında basılıyor")
 
 
+def test_arastirma_sharpe_basan_HER_yuzey_notu_gosteriyor():
+    """Araştırma Sharpe'ı basan her yüzey hangi ölçü olduğunu söylemeli.
+
+    Bu hata DÖRT yüzeyde ayrı ayrı çıktı ve üçünü düzeltince dördüncü
+    (forward_test.py) gözden kaçtı — orada durum daha kötüydü: AYNI ÇIKTININ
+    içinde satır 14 '+0.66' (hafızadan, fold ortalaması), satır 36 '+0.74'
+    (tablo, tüm dönem) yazıyordu. Ekranlar arası değil, tek ekranda çelişki.
+
+    Test yüzey listesini SABİTLER: yeni bir yerde araştırma Sharpe'ı basılıp
+    not eklenmezse burası kırılır. ('İki yerde iki sayı' bu projede tekrar
+    tekrar çıkan hata sınıfı; sayımı insana bırakmak yetmiyor.)
+    """
+    import inspect
+
+    from evaluation.plain import IKI_SHARPE_NOTU  # noqa: F401  (varlık kontrolü)
+
+    yuzeyler = {}
+    from dashboard import report as _rep
+    from scripts import benchmark as _bench
+    from scripts import forward_test as _fwd
+    yuzeyler["dashboard/report.py (_kiyas)"] = inspect.getsource(_rep._kiyas)
+    yuzeyler["scripts/benchmark.py (_donem_tablosu)"] = \
+        inspect.getsource(_bench._donem_tablosu)
+    yuzeyler["scripts/forward_test.py (main)"] = inspect.getsource(_fwd.main)
+    with open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "agent.py"), encoding="utf-8") as f:
+        yuzeyler["agent.py (_show_karne)"] = f.read()
+
+    eksik = [ad for ad, src in yuzeyler.items() if "IKI_SHARPE_NOTU" not in src]
+    assert not eksik, (
+        "araştırma Sharpe'ı basan şu yüzey(ler) hangi ölçü olduğunu "
+        f"söylemiyor: {', '.join(eksik)}")
+    print(f"  [ok] {len(yuzeyler)} yüzeyin hepsi iki-Sharpe notunu gösteriyor")
+
+
 def test_eksik_donemli_kosu_dashboardu_sessizce_bosaltmaz():
     """Kısa kıyas koşusu, 3 dönemlik ölçümü SESSİZCE silmemeli.
 
@@ -189,6 +224,7 @@ def main() -> None:
     test_olcum_tarihi_damgasi_var()
     test_bozuk_dosya_dashboardu_cokertmez()
     test_iki_sharpe_notu_ARASTIRMA_satirinda_basiliyor()
+    test_arastirma_sharpe_basan_HER_yuzey_notu_gosteriyor()
     test_eksik_donemli_kosu_dashboardu_sessizce_bosaltmaz()
     print("OK — kıyas bölümü raporda var ve araştırma dönemini kanıt saymıyor.")
 

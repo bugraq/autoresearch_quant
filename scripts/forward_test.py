@@ -144,7 +144,14 @@ def main() -> None:
     hyp = aday.spec()
     # Sicilden gelen adayda araştırma Sharpe'ı kayıtlı olmayabilir (kampanya
     # hafızası --fresh ile sıfırlanmışsa). O zaman satırı hiç basma.
-    _rs = (f"\n                      (araştırma Sharpe ~{sh_research:+.2f})"
+    #
+    # "fold ort." ETİKETİ ZORUNLU: buradaki sayı hafızadan gelir (walk-forward
+    # fold ORTALAMASI, +0.66) ama AŞAĞIDAKİ TABLONUN araştırma satırı tüm
+    # dönemi tek parça ölçer (+0.74). Etiketsiz bırakıldığında AYNI ÇIKTININ
+    # İÇİNDE iki farklı araştırma Sharpe'ı görünüyordu — ekranlar arası değil,
+    # tek ekranda çelişki. İkisi de doğru; hangisi olduğu yazmalı.
+    _rs = (f"\n                      (araştırma Sharpe ~{sh_research:+.2f} "
+           f"— fold ort.; alttaki tablo TÜM DÖNEM ölçer)"
            if sh_research is not None else "")
 
     # --- İleri-test dönemi: sistemin gördüğü son tarih + 1 gün → bugün ---
@@ -237,21 +244,34 @@ def main() -> None:
     # kendi docstring'inde söz verdiği "pasif al-tut ile karşılaştırır" cümlesi
     # çıktıda karşılığı olmayan bir vaatti. Asıl soru ("uğraşmaya değdi mi?")
     # tam olarak bu sütunla cevaplanır.
-    P(f"\n  {'Dönem':<30}{'Sharpe':>9}{'Toplam':>10}{'MaxDD':>8}{'al-tut':>9}{'fark':>8}")
-    P(f"  {'-'*30}{'-'*9}{'-'*10}{'-'*8}{'-'*9}{'-'*8}")
+    # SÜTUN GENİŞLİĞİ ETİKETLERDEN GELİR, sabit yazılmaz: "Araştırma
+    # (in-sample, tüm dönem)" 32 karakter olduğu için sabit <30 alanı aşıp
+    # bütün satırı sağa kaydırıyordu (dashboard'da aynı hata yaşanmıştı).
+    _ETIKETLER = ("Araştırma (in-sample, tüm dönem)", "Holdout (2023-24) *OOS",
+                  "İleri-test (2025→bugün) *OOS")
+    _w = max(len(e) for e in _ETIKETLER) + 2
+    P(f"\n  {'Dönem':<{_w}}{'Sharpe':>9}{'Toplam':>10}{'MaxDD':>8}"
+      f"{'al-tut':>9}{'fark':>8}")
+    P(f"  {'-'*_w}{'-'*9}{'-'*10}{'-'*8}{'-'*9}{'-'*8}")
 
     def _satir(ad, sh, tot, dd, b_sh):
         fark = "    –" if b_sh is None else f"{sh - b_sh:+7.2f}"
         bs = "    –" if b_sh is None else f"{b_sh:+8.2f}"
-        P(f"  {ad:<30}{sh:>+9.2f}{tot*100:>+9.0f}%{dd*100:>7.0f}%{bs}{fark}")
+        P(f"  {ad:<{_w}}{sh:>+9.2f}{tot*100:>+9.0f}%{dd*100:>7.0f}%{bs}{fark}")
 
-    _satir("Araştırma (in-sample)", r_sh, r_tot, r_dd, rb_sh)
-    _satir("Holdout (2023-24) *OOS", h_sh, h_tot, h_dd, hb_sh)
+    _satir(_ETIKETLER[0], r_sh, r_tot, r_dd, rb_sh)
+    _satir(_ETIKETLER[1], h_sh, h_tot, h_dd, hb_sh)
     if f_sh is not None:
-        _satir("İleri-test (2025→bugün) *OOS", f_sh, f_tot, f_dd, fb_sh)
+        _satir(_ETIKETLER[2], f_sh, f_tot, f_dd, fb_sh)
         P(f"\n  İleri-test biriken getiri eğrisi:\n    {_sparkline(f_eq)}")
     P("\n  'al-tut' = aynı evreni eşit ağırlıkla alıp TUTMAK (hiç uğraşmamak).")
     P("  'fark' negatifse o dönemde uğraşmanın karşılığı alınmamıştır.")
+    # Açıklama tek kaynaktan (evaluation/plain.py) — karne, kıyas, dashboard
+    # ve bu araç AYNI cümleyi göstersin.
+    from evaluation.plain import _sar, IKI_SHARPE_NOTU
+    P("")
+    for parca in _sar(IKI_SHARPE_NOTU, 74):
+        P(f"  {parca}")
 
     # --- Yorum: OOS TUTARLILIĞI (asıl soru) ---
     P("\n" + "─" * 78)
@@ -282,6 +302,39 @@ def main() -> None:
   Örneklem-dışı dönemler: {', '.join(f'{ad}:{s:+.2f}' for ad,s in oos)}.
   Kesin yargı için daha fazla OOS dönemi gerekli — ileri-test her yeni günle
   büyür (holdout'un bitmeyen hâli).""")
+    # --- ÖLÇÜMÜ SİCİLE YAZ (append-only) ---
+    # Neden: forward_test sicili "her gün büyüyen bir zaman serisi" olarak
+    # tasarlandı — holdout tek-atıştır ve tükenir, ileri-test tükenmez. Ama bu
+    # araç ölçümü hesaplayıp ÇÖPE ATIYORDU; yalnızca main.py --holdout yolu
+    # yazıyordu. Sonuç: menüden [8] İleri-test kaç kez koşulsa da sicil
+    # büyümüyor, karne/dashboard bayat sayıyı gösteriyordu (ölçüldü: sicil
+    # 2026-07-29 +0.37 derken canlı ölçüm +0.45'ti).
+    #
+    # Üzerine YAZMAZ, EKLER: aynı adayın farklı tarihlerdeki ölçümleri birikince
+    # stratejinin canlı performans eğrisi olur. Tam hassasiyetle yazılır
+    # (yuvarlanmış değer sicile girmemeli — sonradan karşılaştırmayı bozar).
+    if f_sh is not None:
+        try:
+            from holdout.service import HoldoutService
+            from evaluation.three_period import final_verdict
+            v = final_verdict(aday.research_sharpe, h_sh, f_sh,
+                              cfg.min_acceptance_sharpe)
+            svc = HoldoutService(holdout, os.path.join(HERE, "holdout_audit.sqlite"),
+                                 cost_bps=COST_BPS,
+                                 min_sharpe=cfg.min_acceptance_sharpe)
+            svc.record_forward(hid, forward_end, f_sh, f_tot, v.verdict,
+                               forward_start, forward_end)
+            svc.close()
+            P(f"  Sicile yazıldı: {hid} @ {forward_end}  "
+              f"Sharpe={f_sh:+.4f}  toplam={f_tot*100:+.1f}%  [{v.verdict}]")
+            P("  (Üzerine yazılmaz — her ölçüm ayrı satır; sicil zaman serisidir.)")
+        except Exception as e:  # noqa: BLE001
+            # Sicile yazamamak ÖLÇÜMÜ geçersiz kılmaz; sessiz kalmak ise
+            # kullanıcıya sicilin büyüdüğünü sandırır.
+            P(f"  ⚠ Sicile YAZILAMADI ({type(e).__name__}: {str(e)[:120]})")
+            P("    Ölçüm yukarıda geçerli; karne bir sonraki koşuya kadar "
+              "eski değeri gösterecek.")
+
     P("═" * 78 + "\n")
 
     if _WRITE:

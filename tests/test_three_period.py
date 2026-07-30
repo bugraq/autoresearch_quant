@@ -239,6 +239,44 @@ def test_holdout_degerlendirmesi_adayi_sicile_yazar():
     print("  [ok] holdout degerlendirmesi adayi otomatik sicile yaziyor")
 
 
+def test_ileri_test_sicili_ZAMAN_SERISI_olarak_birikir():
+    """Aynı aday tekrar ölçülünce ÜZERINE YAZILMAZ, satır EKLENİR.
+
+    Holdout tek-atıştır (kilitli dönem sonludur, tükenir). İleri-test dönemi
+    ise her gün büyür; sicil bu yüzden append-only bir ZAMAN SERİSİDİR.
+
+    Gerçek koşuda bu tasarım boşa çıkmıştı: `scripts/forward_test.py` taze
+    ölçümü hesaplayıp ÇÖPE ATIYORDU (yalnız main.py --holdout yolu yazıyordu).
+    Menüden [8] İleri-test kaç kez koşulsa da sicil büyümüyor, karne bayat
+    sayıyı gösteriyordu — ölçüldü: sicil 2026-07-29 +0.37 derken canlı
+    ölçüm +0.45'ti. Bu test hem birikmeyi hem 'en son kazanır' kuralını çiviler.
+    """
+    import os
+    import tempfile
+
+    from data import gen_cross_sectional_momentum, split_by_fraction
+    from holdout import HoldoutService
+
+    fd, db = tempfile.mkstemp(suffix=".sqlite"); os.close(fd); os.remove(db)
+    _r, holdout = split_by_fraction(gen_cross_sectional_momentum(seed=1), 0.7)
+    svc = HoldoutService(holdout, audit_path=db, cost_bps=1.0)
+    svc.record_forward("hyp_0033", "2026-07-29", 0.37, 0.08, "DOĞRULANDI")
+    svc.record_forward("hyp_0033", "2026-07-30", 0.445, 0.105, "DOĞRULANDI")
+    log = svc.forward_log("hyp_0033")
+    son = svc.latest_forward()
+    svc.close()
+
+    assert len(log) == 2, f"ölçüm birikmedi (üzerine yazıldı?): {log}"
+    assert log[0][1] == "2026-07-29" and log[1][1] == "2026-07-30", \
+        f"sicil kronolojik değil: {log}"
+    assert abs(son["hyp_0033"] - 0.445) < 1e-9, \
+        f"karne EN SON ölçümü almıyor: {son}"
+    # Tam hassasiyet: yuvarlanmış değer sicile girerse sonraki
+    # karşılaştırmalar (eğilim var mı?) bozulur.
+    assert abs(log[1][2] - 0.445) < 1e-12, "sicile yuvarlanmış değer yazılmış"
+    print("  [ok] ileri-test sicili zaman serisi olarak birikiyor (en son kazanır)")
+
+
 def main() -> None:
     test_holdout_gecip_ileri_testte_cokene_GUVENILIR_DENMEZ()
     test_uc_donemde_de_ayakta_kalan_dogrulanir()
@@ -254,6 +292,7 @@ def main() -> None:
     test_sicil_kampanya_sifirlansa_da_yasar()
     test_ayni_aday_ikinci_kez_bulunursa_ilk_kayit_korunur()
     test_holdout_degerlendirmesi_adayi_sicile_yazar()
+    test_ileri_test_sicili_ZAMAN_SERISI_olarak_birikir()
     print("OK — üç-dönem hükmü testleri geçti (tek holdout yeterli sayılmıyor).")
 
 
