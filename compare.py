@@ -54,8 +54,8 @@ from orchestrator import run_campaign
 from main import HERE, build_config, load_data, load_yaml
 
 
-def _spec_ops_fields(hyp_json: str) -> "tuple[set, set]":
-    """hypothesis_json -> (kullanılan operatörler, kullanılan veri alanları)."""
+def _spec_ops_fields(hyp_json: str) -> "tuple[set, set, str]":
+    """hypothesis_json -> (operatörler, veri alanları, model tipi)."""
     ops: set = set()
     fields: set = set()
 
@@ -76,7 +76,45 @@ def _spec_ops_fields(hyp_json: str) -> "tuple[set, set]":
     walk(h.get("signal", {}))
     for f in h.get("features", []):
         walk(f.get("expression", {}))
-    return ops, fields
+    return ops, fields, str((h.get("model") or {}).get("type", "dsl_formula"))
+
+
+def _yapisal_isabet(ops: set, fields: set, model_tipi: str,
+                    need_ops: set, need_any: set) -> bool:
+    """Bu hipotez GERÇEK alpha'nın ailesini deniyor mu?
+
+    ★ MODEL TİPİNE GÖRE FARKLI SORULUR — yoksa ölçüt geçersizdir.
+
+    Ölçülen hedef "momentum × hacim ETKİLEŞİMİ"dir. Bunu denemenin iki
+    meşru yolu var ve ikisi FARKLI görünür:
+
+      dsl_formula : etkileşimi ELLE kurmak gerekir -> `multiply` düğümü ŞART.
+      ML (random_forest / gbm / ...) : model etkileşimi KENDİSİ öğrenir;
+          araştırmacının işi iki bacağı FEATURE olarak BESLEMEKtir. Açıkça
+          çarpmak gereksizdir, hatta ML modunda anti-desendir.
+
+    Bu ayrım yapılmadan ölçüldüğünde (canlı yaşandı, 30.07.2026) sonuç
+    tamamen yanıltıcıydı:
+        baseline'lar  : %100 dsl_formula  -> `multiply` yazmak zorunda
+        LLM           : %100 random_forest -> hiç `multiply` yazmıyor
+        LLM isabeti   : %0   ("hiç bulamadı")
+    Oysa LLM'in 15 hipotezinin HEPSİ doğru malzemeyi veriyordu: close
+    (return -> momentum) VE volume/dollar_volume. Yani ölçüt, LLM'i
+    kullanmak ZORUNDA olduğu model tipi yüzünden cezalandırıyordu; ortaya
+    çıkan "LLM rastgeleden kötü" tablosu bir ÖLÇÜM hatasıydı, bulgu değil.
+    """
+    if not need_any or (need_any & fields):
+        alanlar_var = True
+    else:
+        alanlar_var = False
+    if not alanlar_var:
+        return False
+    if model_tipi != "dsl_formula":
+        # ML modunda birleştirmeyi model yapar: bacakların BESLENMESİ yeterli.
+        # (need_any zaten yukarıda kontrol edildi; ayrıca momentum bacağı için
+        #  fiyat alanı gerekir — need_any hacim bacağını temsil ediyor.)
+        return True
+    return need_ops <= ops
 
 
 def structural_hit_rate(memory: MemoryStore, target: dict) -> "tuple[int, int]":
@@ -94,17 +132,22 @@ def structural_hit_rate(memory: MemoryStore, target: dict) -> "tuple[int, int]":
     isabet oranını %26 -> %41'e ŞİŞİRİYORDU; random'da hiç varyant yok (kabul
     alamayınca optimizer tetiklenmiyor) → taban tabana farklı popülasyonlar
     kıyaslanıyordu. Yalnızca birincil hipotezler sayılır.
+
+    ★ İSABET TESTİ MODEL TİPİNE GÖRE DEĞİŞİR — bkz. _yapisal_isabet().
+    Formül modunda `multiply` şart; ML modunda bacakları beslemek yeterli
+    (etkileşimi model kurar). Bu ayrım olmadan ölçüt, ML kullanan yarışmacıyı
+    haksız yere sıfırlıyordu.
     """
     need_ops = set(target.get("required_ops", []))
     need_any = set(target.get("required_any_field", []))
     hits = total = 0
     for (hj,) in _primary_specs(memory):
         try:
-            ops, fields = _spec_ops_fields(hj)
+            ops, fields, model_tipi = _spec_ops_fields(hj)
         except Exception:  # noqa: BLE001 — bozuk kayıt sayımı bozmasın
             continue
         total += 1
-        if need_ops <= ops and (not need_any or (need_any & fields)):
+        if _yapisal_isabet(ops, fields, model_tipi, need_ops, need_any):
             hits += 1
     return hits, total
 
@@ -130,10 +173,12 @@ def time_to_first_hit(memory: MemoryStore, target: dict) -> "int | None":
     need_any = set(target.get("required_any_field", []))
     for i, (hj,) in enumerate(_primary_specs(memory), start=1):
         try:
-            ops, fields = _spec_ops_fields(hj)
+            ops, fields, model_tipi = _spec_ops_fields(hj)
         except Exception:  # noqa: BLE001
             continue
-        if need_ops <= ops and (not need_any or (need_any & fields)):
+        # AYNI isabet testi (bkz. _yapisal_isabet). İki yerde iki kural olursa
+        # 'isabet oranı' ile 'ilk isabet' birbiriyle çelişir.
+        if _yapisal_isabet(ops, fields, model_tipi, need_ops, need_any):
             return i
     return None
 
