@@ -701,6 +701,69 @@ def _uc_donem_satirlari(memory_db: str, holdout_db: str) -> "list[tuple]":
     return out
 
 
+def _ileri_sicil(holdout_db: str) -> str:
+    """İLERİ-TEST SİCİLİ — aynı adayın ZAMAN İÇİNDEKİ ölçümleri.
+
+    Holdout tek-atıştır ve tükenir (kilitli dönem sonlu). İleri-test dönemi
+    ise her gün büyür: aynı aday tekrar tekrar ölçülebilir ve ölçülmelidir.
+    Sicil append-only olduğu için ölçümler birikir ve stratejinin CANLI
+    performans zaman serisi olur.
+
+    Dashboard bu seriyi HİÇ göstermiyordu: üç-dönem tablosu yalnız EN SON
+    ölçümü basıyor, dolayısıyla "aday güçleniyor mu, zayıflıyor mu?" sorusu
+    görünmüyordu. Ölçüldü (hyp_0033): +0.37 -> +0.45 -> +0.31; yani aday
+    ayakta ama SON 19 GÜNDE ZAYIFLADI. Tek satır bunu gizler.
+    """
+    if not holdout_db or not os.path.exists(holdout_db):
+        return ""
+    try:
+        c = sqlite3.connect(f"file:{holdout_db}?mode=ro", uri=True)
+        rows = _q(c, "SELECT hypothesis_id, as_of, sharpe, total_return, verdict "
+                     "FROM forward_test ORDER BY hypothesis_id, as_of")
+        c.close()
+    except sqlite3.Error:
+        return ""          # eski audit dosyası: forward_test tablosu yok
+    # Yalnız BİRDEN ÇOK ölçümü olan adaylar bir "seri" oluşturur.
+    seri: "dict[str, list]" = {}
+    for hid, as_of, sh, tot, v in rows:
+        seri.setdefault(hid, []).append((as_of, sh, tot, v))
+    seri = {h: v for h, v in seri.items() if len(v) > 1}
+    if not seri:
+        return ('<div class="card desc">İleri-test henüz bir kez ölçüldü — '
+                'zaman serisi için tekrar koş: <code>python scripts/forward_test.py</code>. '
+                'Her koşu sicile YENİ satır ekler (üzerine yazmaz).</div>')
+
+    parcalar = []
+    for hid, olcumler in seri.items():
+        satir = ""
+        for i, (as_of, sh, tot, v) in enumerate(olcumler):
+            # Değişim oku: bir öncekine göre güçlendi mi, zayıfladı mı?
+            ok = ""
+            if i:
+                fark = sh - olcumler[i - 1][1]
+                ok = (f'<span class="good">▲ {fark:+.2f}</span>' if fark > 0.02
+                      else f'<span class="bad">▼ {fark:+.2f}</span>' if fark < -0.02
+                      else '<span class="muted">≈</span>')
+            satir += (f'<tr><td>{_esc(str(as_of))}</td>'
+                      f'<td class="num">{sh:+.2f}</td>'
+                      f'<td class="num">{tot*100:+.1f}%</td>'
+                      f'<td>{ok}</td><td>{_esc(str(v))}</td></tr>')
+        ilk, son = olcumler[0], olcumler[-1]
+        yon = ("güçlendi" if son[1] > ilk[1] + 0.02 else
+               "ZAYIFLADI" if son[1] < ilk[1] - 0.02 else "yatay")
+        parcalar.append(
+            f'<div class="card"><b>{_esc(hid)}</b> — {len(olcumler)} ölçüm, '
+            f'ilkinden bu yana <b>{yon}</b>'
+            f'<table class="tbl"><tr><th>ölçüm tarihi</th><th>Sharpe</th>'
+            f'<th>biriken getiri</th><th>değişim</th><th>hüküm</th></tr>'
+            f'{satir}</table></div>')
+    return "".join(parcalar) + (
+        '<div class="desc">Holdout <b>tek-atıştır ve tükenir</b>; ileri-test '
+        'dönemi her gün büyür. Bu yüzden ölçüm üzerine YAZILMAZ, EKLENİR — '
+        'biriken satırlar adayın canlı karnesidir. Bir zafer turu değil, '
+        'süregelen bir sınav: aday <b>ölmediği sürece</b> izlenmeye devam eder.</div>')
+
+
 def _uc_donem(memory_db: str, holdout_db: str, min_sharpe: float) -> str:
     """UC-DONEM HUKMU bolumu — kilitli donem tek basina yetmez."""
     from evaluation.three_period import final_verdict
@@ -1242,6 +1305,13 @@ def generate_dashboard(memory_db: str, holdout_db: str, out_path: str,
                  "birlikte değerlendirilmesinden çıkar; ölçülmemiş dönem 'geçti' "
                  "sayılmaz (EKSİK).",
                  _uc_donem(memory_db, holdout_db, min_acceptance_sharpe)),
+        _section("İleri-Test Sicili — aday zaman içinde ne yapıyor?",
+                 "Kilitli holdout TEK-ATIŞTIR ve tükenir; ileri-test dönemi ise "
+                 "her gün büyür. Bu yüzden aynı aday tekrar tekrar ölçülür ve her "
+                 "ölçüm sicile EKLENİR (üzerine yazılmaz). Üstteki tablo yalnız EN "
+                 "SON ölçümü gösterir; asıl soru — aday güçleniyor mu, zayıflıyor "
+                 "mu — ancak bu seride görünür.",
+                 _ileri_sicil(holdout_db)),
         _section("Kıyas — rastgele al-satçıyı ve al-tut'u geçiyor muyuz?",
                  "Hocanın başarı ölçütü: şu an amaç 'alpha bulmak' değil; parayı "
                  "rastgele al-sat yapan birinden, hiç uğraşmayandan (al-tut) ve "
