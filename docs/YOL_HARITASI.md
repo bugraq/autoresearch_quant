@@ -56,10 +56,14 @@ görmediği taze veri) bunu yalanladı:
 
 | hipotez | kampanya | araştırma | HOLDOUT (23-24) | İLERİ-TEST (25→) | ileri toplam |
 |---|---|---|---|---|---|
-| hyp_0033 | v2 | +0.66 | +0.72 | **+0.37** | **+8%** |
+| hyp_0033 | v2 | +0.66 | +0.72 | **+0.31** | **+%6.6** |
 | hyp_0021 | v4 | +1.14 | +0.93 | −0.36 | −44% |
 | hyp_0025 | v4 | +0.86 | +0.59 | −1.46 | −80% |
 | hyp_0002 | v4 | +0.61 | +1.29 | −0.05 | −29% |
+
+*(İleri-test sütunu EN SON ölçümdür ve her koşuda değişir — dönem büyüyor.
+hyp_0033'ün ölçüm serisi: 29.07 +0.37 → 30.07 +0.45 → 18.08 **+0.31**.
+Yani aday ayakta ama **zayıflıyor**; bkz. dashboard "İleri-Test Sicili".)*
 
 **Üç bulgu:**
 
@@ -78,7 +82,7 @@ görmediği taze veri) bunu yalanladı:
    sezgisi burada tam ters yönde çalışıyor.
 
 **Tek hayatta kalan:** hyp_0033 (v2) üç dönemde de pozitif (+0.66 / +0.72 /
-+0.37). ABARTILMAMALI: +%8/1.5 yıl zayıftır, DSR'ı 0.20'dir (çoklu-test
++0.31). ABARTILMAMALI: +%6.6/1.5 yıl zayıftır, DSR'ı 0.20'dir (çoklu-test
 süzgecini geçmedi) ve çok sayıda deneme içinden çıkmıştır. Doğru ifade
 "alpha bulundu" değil, **"tek aday henüz ölmedi"**dir.
 
