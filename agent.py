@@ -350,7 +350,7 @@ def main() -> None:
                 # Sicildeki gerçek adayı anlat: hocaya gösterilecek olan bu.
                 args.append("--aday")
                 if sade == "s":
-                    args.append("--sade")   # sade mod aday desteklemezse teknik akar
+                    args.append("--sade")   # sade anlatim, sicildeki adayla
             else:
                 canli = Prompt.ask(
                     "Yapay zeka çağrılsın mı? (h = çağırma, hazır örnek — bedava/hızlı)",

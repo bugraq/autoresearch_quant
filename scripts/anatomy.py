@@ -598,18 +598,33 @@ def _sade_strateji_cumlesi(hyp) -> str:
         return "(sade ceviri uretilemedi)"
 
 
-def narrate(campaign, models, cfg, use_llm: bool):
-    """Tek hipotezi SADE dille, adim adim anlat. Teknik ciktinin yalinlastirilmisi."""
+def narrate(campaign, models, cfg, use_llm: bool, aday=None):
+    """Tek hipotezi SADE dille, adim adim anlat. Teknik ciktinin yalinlastirilmisi.
+
+    aday=None  -> yapay zekadan YENI bir fikir istenir (ya da --canned ornek).
+    aday=(hyp, meta) -> SICILDEKI mevcut aday anlatilir: yeni fikir uretilmez,
+        sonda o adayin GERCEK sinav sonuclari (kilitli kasa + taze zaman)
+        sade dille eklenir. Hocaya gosterilecek olan budur.
+    """
     import main as M
     from dsl import compile_hypothesis, validate
     from backtest.model_signal import compute_signal
     from backtest.walk_forward import run_walk_forward
     from evaluation.hard_gate import evaluate
 
+    toplam = 7 if aday else 6
     P("\n" + "═" * 78)
     P("  BIR YATIRIM FIKRI NASIL SINANIR? — bastan sona, sade anlatim")
     P("═" * 78)
-    P("""
+    if aday:
+        P("""
+  Asagida sistemin DAHA ONCE buldugu ve gercek sinavlara soktugu TEK bir
+  yatirim fikrini, dogdugu andan son hukmune kadar adim adim izleyecegiz.
+  Yeni bir fikir uretmiyoruz; elimizdeki gercek adayi anlatiyoruz. Amac:
+  borsa/istatistik bilmeyen birinin bile her adimi anlamasi. Teknik terimler
+  gectikce hemen yaninda ne demek oldugunu yazacagiz.""")
+    else:
+        P("""
   Asagida yapay zekanin urettigi TEK bir yatirim fikrini, dogdugu andan
   'ise yarar mi' kararina kadar adim adim izleyecegiz. Amac: borsa/istatistik
   bilmeyen birinin bile her adimi anlamasi. Teknik terimler geçtikçe hemen
@@ -635,10 +650,26 @@ def narrate(campaign, models, cfg, use_llm: bool):
       O kilitli kismi yalnizca en SONDA, tek sefer aciyoruz — gercek sinav.""")
 
     # --- ADIM 1: fikir ---
-    _n("ADIM 1 / 6  —  Yapay zeka bir fikir uretiyor")
-    hyp = generate_quiet(campaign, models, cfg, use_llm, data)
-    aile = hyp.family.value if hasattr(hyp.family, "value") else str(hyp.family)
-    P(f"""
+    if aday:
+        hyp, meta = aday
+        _n(f"ADIM 1 / {toplam}  —  Yapay zekanin daha once urettigi fikir")
+        P(f"""
+  Bu fikri yapay zeka '{meta['campaign'] or '-'}' adli arastirma turunda
+  uretti; sistemin kayit defterinde '{meta['hid']}' adiyla duruyor. O turda
+  yapay zekaya su soruldu: "Bu piyasada fiyatlarin yonunu tahmin edebilecek
+  bir oruntu bul, ve NEDEN ise yarayacagini ekonomik olarak acikla."
+
+  Onemli kisit: yapay zeka cani ne isterse yapamaz. Ona bir 'lego seti'
+  veriyoruz — sadece izin verdigimiz yapi taslariyla (ortalama, siralama,
+  degisim orani gibi) fikir kurabiliyor. Boylece urettigi her fikri bilgisayar
+  birebir, hatasiz calistirabiliyor.
+
+  URETTIGI FIKIR:
+""")
+    else:
+        _n(f"ADIM 1 / {toplam}  —  Yapay zeka bir fikir uretiyor")
+        hyp = generate_quiet(campaign, models, cfg, use_llm, data)
+        P(f"""
   Yapay zekaya soruyoruz: "Bu piyasada fiyatlarin yonunu tahmin edebilecek
   bir oruntu bul, ve NEDEN ise yarayacagini ekonomik olarak acikla."
 
@@ -649,6 +680,7 @@ def narrate(campaign, models, cfg, use_llm: bool):
 
   URETTIGI FIKIR:
 """)
+    aile = hyp.family.value if hasattr(hyp.family, "value") else str(hyp.family)
     P(f"    ┌{'─'*70}┐")
     for ln in _wrap(hyp.title, 66):
         P(f"    │ {ln:<68} │")
@@ -674,7 +706,7 @@ def narrate(campaign, models, cfg, use_llm: bool):
      tuttu' turu bos fikirleri en basta atiyoruz.""")
 
     # --- ADIM 2: modele cevirme + sizinti ---
-    _n("ADIM 2 / 6  —  Fikri bilgisayarin diline ceviriyoruz")
+    _n(f"ADIM 2 / {toplam}  —  Fikri bilgisayarin diline ceviriyoruz")
     graph = compile_hypothesis(hyp)
     dec = validate(graph, hyp)
     temiz = dec.decision.value == "accept"
@@ -697,7 +729,7 @@ def narrate(campaign, models, cfg, use_llm: bool):
      sonucsuzluktan daha tehlikelidir.""")
 
     # --- ADIM 3: sayiya dokme + egitim ---
-    _n("ADIM 3 / 6  —  Fikir rakamlara donusuyor (ve model ogreniyor)")
+    _n(f"ADIM 3 / {toplam}  —  Fikir rakamlara donusuyor (ve model ogreniyor)")
     signal = compute_signal(graph, hyp, data)
     if hyp.model.type == "dsl_formula":
         P(f"""
@@ -729,7 +761,7 @@ def narrate(campaign, models, cfg, use_llm: bool):
   bir sonraki adimdaki portfoy kurallari veriyor.""")
 
     # --- ADIM 4: para ile test ---
-    _n("ADIM 4 / 6  —  Gecmis veride PARA ile deniyoruz (backtest)")
+    _n(f"ADIM 4 / {toplam}  —  Gecmis veride PARA ile deniyoruz (backtest)")
     res = run_walk_forward(graph, hyp, data, n_folds=5, cost_bps=COST_BPS, signal=signal)
     lq = int((hyp.portfolio.long_quantile or 0.2) * 100)
     P(f"""
@@ -746,7 +778,7 @@ def narrate(campaign, models, cfg, use_llm: bool):
   fikir farkli donemlerin cogunda calisir.""")
 
     # --- ADIM 5: karne ---
-    _n("ADIM 5 / 6  —  Karne: fikir ne kadar iyi?")
+    _n(f"ADIM 5 / {toplam}  —  Karne: fikir ne kadar iyi?")
     sharpe = res.aggregate_sharpe() or 0.0
     folds = res.per_fold_metrics
     wr = _avg_sade(m.hit_rate for m in folds)
@@ -803,7 +835,7 @@ def narrate(campaign, models, cfg, use_llm: bool):
      (Ayrica Excel'de de dogrulanabilir: scripts/verify_sharpe.py bir tablo uretir.)""")
 
     # --- ADIM 6: karar ---
-    _n("ADIM 6 / 6  —  Karar")
+    _n(f"ADIM 6 / {toplam}  —  Karar")
     gate = evaluate(res, hyp, min_acceptance_sharpe=cfg.min_acceptance_sharpe,
                     min_positive_folds=cfg.min_positive_folds)
     kabul = gate.decision.value == "accept"
@@ -827,11 +859,80 @@ def narrate(campaign, models, cfg, use_llm: bool):
   Iste projenin farki bu: cogu sistem Adim 5'teki parlak Sharpe'i gorup
   "buldum!" der. Biz onun sansmi gercek mi oldugunu elemeden inanmiyoruz.""")
 
+    if aday:
+        P("\n  Bu aday o sinavlara GERCEKTEN girdi. Sonucu bir sonraki adimda.")
+        _gercek_sinav_sade(meta, sharpe, toplam)
+
     P("\n" + "═" * 78)
-    P("  BITTI. Bir fikir dogdu, gerekce buldu, rakama dondu, parayla sinandi,")
-    P("  ve dogrulukları elle teyit edilerek bir karara baglandi.")
+    if aday:
+        P("  BITTI. Bir fikir dogdu, gerekce buldu, rakama dondu, parayla sinandi,")
+        P("  ve hic gormedigi iki ayri donemde gercek sinavdan gecirilip hukme baglandi.")
+    else:
+        P("  BITTI. Bir fikir dogdu, gerekce buldu, rakama dondu, parayla sinandi,")
+        P("  ve dogrulukları elle teyit edilerek bir karara baglandi.")
     P("═" * 78 + "\n")
     return hyp, res
+
+
+#: Uc-donem hukmunun sade karsiligi (evaluation/three_period.py ile ayni etiketler).
+_HUKUM_SADE = {
+    "DOĞRULANDI": ("✓ IKI SINAVI DA GECTI",
+                   "Fikir, hic gormedigi iki ayri donemde de para kazandirdi. Bu "
+                   "'kesin kazandiran formul bulduk' demek DEGIL; 'simdilik elenmedi, "
+                   "izlemeye devam' demek."),
+    "REJİM-BAĞIMLI": ("~ DONEME BAGLI, GUVENILMEZ",
+                      "Sinavlardan birinde iyi, otekinde kotu. Yani fikir bazi piyasa "
+                      "donemlerinde tutuyor, bazilarinda tutmuyor. Hangi donemde "
+                      "olacagimizi onceden bilemedigimiz icin buna guvenip para "
+                      "koyamayiz."),
+    "ÇÖKTÜ": ("✗ IKI SINAVDA DA KALDI",
+              "Arastirma verisindeki basari, gecmise uydurulmus bir desenmis. Yeni "
+              "veriyle karsilasinca tutmadi."),
+    "EKSİK": ("? HENUZ HUKUM YOK",
+              "Sinavlardan en az biri henuz yapilmadi. Eksik sinavi 'gecti' saymak, "
+              "tam da kacinmaya calistigimiz kendini kandirma olurdu."),
+}
+
+
+def _gercek_sinav_sade(meta, sharpe_simdi: float, toplam: int) -> None:
+    """SICIL adayinin uc-donem karnesini sade dille anlat (narrate'in son adimi)."""
+    v = meta["verdict"]
+
+    def _s(x):
+        return f"{x:+.2f}" if x is not None else "yapilmadi"
+
+    _n(f"ADIM {toplam} / {toplam}  —  Gercek sinav: fikir hic gormedigi veride tuttu mu?")
+    P(f"""
+  Buraya kadarki her sey ARASTIRMA verisindeydi, yani fikrin gelistirildigi
+  donemde. Orada iyi gorunmek kolaydir: yapay zeka o donemin icinden secilerek
+  bu fikre ulasti. Asil soru, fikrin HIC GORMEDIGI veride ne yaptigi.
+
+  Bu aday iki ayri sinava sokuldu:
+
+    1) KILITLI KASA  — veriden en basta ayirdigimiz, arastirma boyunca hic
+       dokunulmayan donem. Sadece bir kez acilir; ikinci sans yok.
+    2) TAZE ZAMAN    — sistemin arastirmayi bitirdigi tarihten SONRA gelen,
+       o gun henuz var olmayan gercek piyasa verisi. Buna 'ileri-test' diyoruz.
+
+  KARNE (Sharpe orani, 'risk basina kazanc'):
+     Arastirma donemi : {_s(meta['r'])}   (fikrin gelistirildigi yer — kanit sayilmaz)
+     Kilitli kasa     : {_s(meta['h'])}   (gecme cizgisi: +0.50)
+     Taze zaman       : {_s(meta['f'])}   (gecme cizgisi: en azindan sifirin ustu)""")
+    if meta["r"] is not None and abs(meta["r"] - sharpe_simdi) > 0.05:
+        P(f"""
+     Not: Adim 5'teki {sharpe_simdi:+.2f} ile buradaki arastirma notu farkli. Ikisi de
+     ayni donem icin; Adim 5 bugunku ayarlarla yeniden hesaplanan donem
+     ortalamasi, buradaki ise arastirma turunda kayda gecen deger. Hukmu
+     belirleyen kisim zaten bu degil, alttaki iki sinav sonucu.""")
+    baslik, aciklama = _HUKUM_SADE.get(v.verdict, (v.verdict, ""))
+    P(f"""
+  SON HUKUM:  {baslik}""")
+    for parca in _sar_satir(aciklama, 68):
+        P(f"     {parca}")
+    P("""
+  >> Bu adimin dersi: tek bir parlak sonuca bakip karar vermek, kendini
+     kandirmanin en kolay yoludur. Bir fikre guvenmek icin, onu hic gormedigi
+     BIRDEN FAZLA donemde ayakta gormek gerekir.""")
 
 
 def _wrap(text: str, width: int):
@@ -1007,16 +1108,6 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    # --sade henuz SICIL adayini anlatmiyor (narrate yeni hipotez uretir).
-    # Sessizce yeni fikir uretmek, kullanicinin ISTEDIGI adayi gostermemek
-    # demektir — bu oturumda defalarca duzeltilen "sessizce baska sey yap"
-    # hatasinin aynisi. Acikca soyle ve TEKNIK moda dus.
-    if args.sade and args.aday:
-        P("  [not] --sade su an SICIL adayini anlatmiyor (yeni fikir uretir).")
-        P("        --aday istendigi icin TEKNIK moda geciliyor: aday korunuyor,")
-        P("        anlatim teknik. (Sade+aday isteniyorsa narrate() genisletilmeli.)")
-        args.sade = False
-
     if args.sade:
         from dotenv import load_dotenv
         load_dotenv(os.path.join(HERE, ".env"))
@@ -1024,7 +1115,10 @@ def main() -> None:
         campaign = M.load_yaml("campaign.yaml")["campaign"]
         models = M.load_yaml("models.yaml")["models"]
         cfg = M.build_config(campaign)
-        narrate(campaign, models, cfg, use_llm=not args.canned)
+        # --aday: yeni fikir URETILMEZ; sicildeki gercek aday sade dille anlatilir.
+        aday = (_sicilden_aday(None if args.aday == "__EN_IYI__" else args.aday)
+                if args.aday else None)
+        narrate(campaign, models, cfg, use_llm=not args.canned, aday=aday)
     else:
         P("\n" + "#" * 78)
         P("#  TEK HIPOTEZ ANATOMISI — dogusundan kararina, her adim acik")
